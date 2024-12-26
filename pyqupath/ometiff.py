@@ -7,12 +7,12 @@ import multiprocessing
 import os
 import pathlib
 import re
-import shutil
 import sys
-import tempfile
 import uuid
+import xml.etree.ElementTree as ET
 
 import numpy as np
+import pandas as pd
 import skimage.transform
 import tifffile
 import zarr
@@ -435,11 +435,6 @@ def pyramid_assemble_from_dict(
         print()
 
 
-###############################################################################
-# Call pyramid_assemble()
-###############################################################################
-
-
 def export_ometiff_pyramid(
     paths_tiff: list[str],
     path_ometiff: str,
@@ -523,3 +518,40 @@ def export_ometiff_pyramid_from_dict(
         tile_size=tile_size,
         num_threads=num_threads,
     )
+
+
+###############################################################################
+# OME-TIFF metadata
+###############################################################################
+
+
+def extract_channels_from_ometiff(path_ometiff):
+    """
+    Extract channel metadata from an OME-TIFF file.
+
+    Parameters
+    ----------
+    path_ometiff : str
+        Path to the OME-TIFF file.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame containing channel metadata with the following columns:
+        - "ID": The unique identifier of the channel.
+        - "Name": The name of the channel.
+    """
+    with tifffile.TiffFile(path_ometiff) as im:
+        xml_str = im.ome_metadata
+
+    # Parse the XML string into an ElementTree object
+    root = ET.fromstring(xml_str)
+
+    # Extract channel metadata
+    channels = []
+    for channel in root.findall(".//{*}Channel"):
+        channel_id = channel.get("ID")
+        name = channel.get("Name")
+        channels.append({"ID": channel_id, "Name": name})
+
+    return pd.DataFrame(channels)
