@@ -272,6 +272,169 @@ def pyramid_assemble(args=None):
         print()
 
 
+def pyramid_assemble_from_dict(
+    im_dict: dict[str, np.ndarray],
+    out_path: str,
+    channel_names: list[str] = None,
+    pixel_size: float = None,
+    tile_size: int = 1024,
+    num_threads: int = 0,
+):
+    """
+    Assemble a pyramidal OME-TIFF file from a dictionary of images.
+
+    Parameters
+    ----------
+    im_dict : dict of str to np.ndarray
+        A dictionary where keys are channel names and values are 2D numpy arrays
+        representing the images.
+    channel_names : list of str
+        Names of the channels in the OME-TIFF file. Each name corresponds to a
+        channel in the `im_dict`. Default is None, meaning the channel names will
+        be the keys of the `im_dict`.
+    out_path : str
+        Output filename. Script will exit immediately if file exists.
+    pixel_size : float, optional
+        Pixel size in microns. Will be recorded in OME-XML metadata.
+    tile_size : int, optional
+        Width of pyramid tiles in output file (must be a multiple of 16).
+        Default is 1024.
+    num_threads : int, optional
+        Number of parallel threads to use for image downsampling. Default is
+        number of available CPUs.
+    """
+    out_path = pathlib.Path(out_path)
+    if out_path.exists():
+        error(out_path, "Output file already exists, remove before continuing.")
+
+    if num_threads == 0:
+        if hasattr(os, "sched_getaffinity"):
+            num_threads = len(os.sched_getaffinity(0))
+        else:
+            num_threads = multiprocessing.cpu_count()
+        print(f"Using {num_threads} worker threads based on detected CPU" " count.")
+        print()
+    tifffile.TIFF.MAXWORKERS = num_threads
+    tifffile.TIFF.MAXIOWORKERS = num_threads * 5
+
+    if channel_names is None:
+        channel_names = list(im_dict.keys())
+    in_imgs = [im_dict[name] for name in channel_names]
+
+    # ensure the shape and dtype of the images are the same
+    base_shape = next(iter(im_dict.values())).shape
+    dtype = next(iter(im_dict.values())).dtype
+    for name, im in im_dict.items():
+        if im.shape != base_shape:
+            error(
+                name,
+                f"Expected shape {base_shape} to match first input image,"
+                f" got {im.shape} instead.",
+            )
+        if im.dtype != dtype:
+            error(
+                name,
+                f"Expected dtype '{dtype}' to match first input image,"
+                f" got '{im.dtype}' instead.",
+            )
+
+    # calculate the pyramid levels
+    num_channels = len(in_imgs)
+    num_levels = np.ceil(np.log2(max(base_shape) / tile_size)) + 1
+    factors = 2 ** np.arange(num_levels)
+    shapes = np.ceil(np.array(base_shape) / factors[:, None]).astype(int)
+    cshapes = np.ceil(shapes / tile_size).astype(int)
+
+    if channel_names and len(channel_names) != num_channels:
+        error(
+            out_path,
+            f"Number of channel names ({len(channel_names)}) does not"
+            f" match number of channels in final image ({num_channels}).",
+        )
+
+    print("Pyramid level sizes:")
+    for i, shape in enumerate(shapes):
+        print(f"    level {i + 1}: {format_shape(shape)}", end="")
+        if i == 0:
+            print(" (original size)", end="")
+        print()
+    print()
+
+    pool = concurrent.futures.ThreadPoolExecutor(num_threads)
+
+    def tiles0():
+        ts = tile_size
+        ch, cw = cshapes[0]
+        for c, zimg in enumerate(in_imgs, 1):
+            print(f"    channel {c}")
+            img = zimg[:]
+            for j in range(ch):
+                for i in range(cw):
+                    tile = img[ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+                    yield tile
+            del img
+
+    def tiles(level):
+        tiff_out = tifffile.TiffFile(out_path, is_ome=False)
+        zimg = zarr.open(tiff_out.series[0].aszarr(level=level - 1))
+        ts = tile_size * 2
+
+        def tile(coords):
+            c, j, i = coords
+            tile = zimg[c, ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+            tile = skimage.transform.downscale_local_mean(tile, (2, 2))
+            tile = np.round(tile).astype(dtype)
+            return tile
+
+        ch, cw = cshapes[level]
+        coords = itertools.product(range(num_channels), range(ch), range(cw))
+        yield from pool.map(tile, coords)
+
+    metadata = {
+        "UUID": uuid.uuid4().urn,
+    }
+    if pixel_size:
+        metadata.update(
+            {
+                "PhysicalSizeX": pixel_size,
+                "PhysicalSizeXUnit": "µm",
+                "PhysicalSizeY": pixel_size,
+                "PhysicalSizeYUnit": "µm",
+            }
+        )
+    if channel_names:
+        metadata.update(
+            {
+                "Channel": {"Name": channel_names},
+            }
+        )
+    print(f"Writing level 1: {format_shape(shapes[0])}")
+    with tifffile.TiffWriter(out_path, ome=True, bigtiff=True) as writer:
+        writer.write(
+            data=tiles0(),
+            shape=(num_channels,) + tuple(shapes[0]),
+            subifds=num_levels - 1,
+            dtype=dtype,
+            tile=(tile_size, tile_size),
+            compression="adobe_deflate",
+            predictor=True,
+            metadata=metadata,
+        )
+        print()
+        for level, shape in enumerate(shapes[1:], 1):
+            print(f"Resizing image for level {level + 1}: {format_shape(shape)}")
+            writer.write(
+                data=tiles(level),
+                shape=(num_channels,) + tuple(shape),
+                subfiletype=1,
+                dtype=dtype,
+                tile=(tile_size, tile_size),
+                compression="adobe_deflate",
+                predictor=True,
+            )
+        print()
+
+
 ###############################################################################
 # Call pyramid_assemble()
 ###############################################################################
@@ -282,7 +445,7 @@ def export_ometiff_pyramid(
     path_ometiff: str,
     channel_names: list[str],
     tile_size: int = 256,
-    n_threads: int = 20,
+    num_threads: int = 20,
 ):
     """
     Generate a pyramidal OME-TIFF file from multiple input TIFF files.
@@ -301,13 +464,13 @@ def export_ometiff_pyramid(
         Path to the output OME-TIFF file. If the file already exists, the process
         will terminate to prevent overwriting.
     channel_names : list of str
-        Names of the channels in the OME-TIFF file. Each name corresponds to a TIFF
-        file in `input_tiff_paths`. The length of this list must match the number
-        of files in `input_tiff_paths`.
+        Names of the channels in the OME-TIFF file. Each name corresponds to a
+        channel in the `im_dict`. Default is None, meaning the channel names will
+        be the keys of the `im_dict`.
     tile_size : int, optional, default=256
         The width and height of tiles in the pyramidal TIFF. Smaller tile sizes
         can improve performance in certain scenarios.
-    n_threads : int, optional, default=20
+    num_threads : int, optional, default=20
         The number of threads to use for downsampling images and constructing the
         pyramid. Higher values can improve performance on multi-core systems.
     """
@@ -319,49 +482,44 @@ def export_ometiff_pyramid(
         "--tile-size",
         str(tile_size),
         "--num-threads",
-        str(n_threads),
+        str(num_threads),
     ]
     pyramid_assemble(args)
 
 
 def export_ometiff_pyramid_from_dict(
-    marker_dict: dict[str, np.ndarray],
+    im_dict: dict[str, np.ndarray],
     path_ometiff: str,
-    **kwargs,
-):
+    channel_names: list[str] = None,
+    tile_size: int = 256,
+    num_threads: int = 20,
+) -> str:
     """
     Generate a pyramidal OME-TIFF file from a dictionary of marker images.
 
     Parameters
     ----------
-    marker_dict : dict of str to np.ndarray
+    im_dict : dict of str to np.ndarray
         A dictionary where keys are channel names and values are 2D numpy arrays
-        representing the marker images.
+        representing the images.
     path_ometiff : str
-        Path to the output OME-TIFF file.
+        Path to the output OME-TIFF file. If the file already exists, the process
+        will terminate to prevent overwriting.
+    channel_names : list of str
+        Names of the channels in the OME-TIFF file. Each name corresponds to a TIFF
+        file in `input_tiff_paths`. The length of this list must match the number
+        of files in `input_tiff_paths`.
+    tile_size : int, optional, default=256
+        The width and height of tiles in the pyramidal TIFF. Smaller tile sizes
+        can improve performance in certain scenarios.
+    n_threads : int, optional, default=20
+        The number of threads to use for downsampling images and constructing the
+        pyramid. Higher values can improve performance on multi-core systems.
     """
-    dir_output = os.path.dirname(path_ometiff)
-    temp_dir = tempfile.mkdtemp(dir=dir_output)
-
-    paths_im = []
-    names_im = []
-
-    try:
-        for name, im in marker_dict.items():
-            # Ensure filenames are unique
-            safe_name = re.sub(r"[^\w\-_.]", "_", name)  # Remove unsafe characters
-            path_im = os.path.join(temp_dir, f"{safe_name}.tiff")
-            tifffile.imwrite(path_im, im)
-            paths_im.append(path_im)
-            names_im.append(name)
-
-        # Call the pyramid export function
-        export_ometiff_pyramid(
-            paths_tiff=paths_im,
-            path_ometiff=path_ometiff,
-            channel_names=names_im,
-            **kwargs,
-        )
-    finally:
-        # Ensure temporary directory is cleaned up
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    pyramid_assemble_from_dict(
+        im_dict=im_dict,
+        out_path=path_ometiff,
+        channel_names=channel_names,
+        tile_size=tile_size,
+        num_threads=num_threads,
+    )
