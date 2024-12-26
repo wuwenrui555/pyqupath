@@ -16,6 +16,7 @@ import pandas as pd
 import skimage.transform
 import tifffile
 import zarr
+from collections import OrderedDict
 
 ###############################################################################
 # OME-TIFF writer
@@ -577,3 +578,26 @@ def ometiff_page_generator(path_ometiff):
     with tifffile.TiffFile(path_ometiff) as tif:
         for page in tif.pages:
             yield page.asarray()
+
+
+def load_ometiff(path_ometiff: str) -> dict[str, np.ndarray]:
+    """
+    Load an OME-TIFF file into a dictionary of channel images.
+
+    Parameters
+    ----------
+    path_ometiff : str or pathlib.Path
+        Path to the OME-TIFF file.
+
+    Returns
+    -------
+    dict of str to np.ndarray
+        A dictionary where keys are channel names and values are 2D numpy arrays
+        representing the images.
+    """
+    channel_names = extract_channels_from_ometiff(path_ometiff)["Name"].tolist()
+    im_dict = OrderedDict()
+    with tifffile.TiffFile(path_ometiff) as tif:
+        for i, page in enumerate(tif.pages):
+            im_dict[channel_names[i]] = page.asarray()
+    return im_dict
