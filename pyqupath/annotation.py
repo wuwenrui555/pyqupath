@@ -52,7 +52,7 @@ def assign_bright_colors(x: list[str]) -> dict[str, tuple[int, int, int]]:
 
 def mask_to_geojson(
     mask: np.ndarray,
-    geojson_path: str,
+    path_geojson: str,
     annotation_dict: dict[int, str] = {},
     simplify_opencv_precision: float = None,
     simplify_shapely_tolerance: float = None,
@@ -64,7 +64,7 @@ def mask_to_geojson(
     ----------
     mask : np.ndarray
         A 2D array where values represent labels for different segmented regions.
-    geojson_path : str
+    path_geojson : str
         Path to save the output GeoJSON file.
     annotation_dict : dict[int, str]
         A dictionary mapping label integers to their corresponding annotation names.
@@ -131,6 +131,6 @@ def mask_to_geojson(
     geojson = {"type": "FeatureCollection", "features": features}
 
     # Save GeoJSON file with compact formatting
-    with open(geojson_path, "w") as f:
+    with open(path_geojson, "w") as f:
         json.dump(geojson, f)
-    print(f"GeoJSON saved to {geojson_path}")
+    print(f"GeoJSON saved to {path_geojson}")
