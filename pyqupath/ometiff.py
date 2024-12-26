@@ -1,28 +1,26 @@
-from __future__ import print_function, division
-import warnings
-import sys
-import os
-import re
-import io
+from __future__ import division, print_function
+
 import argparse
-import pathlib
-import struct
-import itertools
-import uuid
-import multiprocessing
 import concurrent.futures
+import itertools
+import multiprocessing
+import os
+import pathlib
+import re
+import shutil
+import sys
+import tempfile
+import uuid
+
 import numpy as np
+import skimage.transform
 import tifffile
 import zarr
-import skimage.transform
 
-# This API is apparently changing in skimage 1.0 but it's not clear to
-# me what the replacement will be, if any. We'll explicitly import
-# this so it will break loudly if someone tries this with skimage 1.0.
-try:
-    from skimage.util.dtype import _convert as dtype_convert
-except ImportError:
-    from skimage.util.dtype import convert as dtype_convert
+###############################################################################
+# OME-TIFF writer
+# https://github.com/labsyspharm/ome-tiff-pyramid-tools/blob/master/pyramid_assemble.py
+###############################################################################
 
 
 def format_shape(shape):
@@ -34,7 +32,15 @@ def error(path, msg):
     sys.exit(1)
 
 
-def main():
+def pyramid_assemble(args=None):
+    """
+    Assemble a pyramidal OME-TIFF file.
+
+    Parameters
+    ----------
+    args : list of str, optional
+        Command-line arguments. If None, arguments are parsed from sys.argv.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "in_paths",
@@ -89,7 +95,7 @@ def main():
         help="Number of parallel threads to use for image downsampling; default"
         " is number of available CPUs",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(args)
     in_paths = args.in_paths
     out_path = args.out_path
     is_mask = args.mask
@@ -266,5 +272,96 @@ def main():
         print()
 
 
-if __name__ == "__main__":
-    main()
+###############################################################################
+# Call pyramid_assemble()
+###############################################################################
+
+
+def export_ometiff_pyramid(
+    paths_tiff: list[str],
+    path_ometiff: str,
+    channel_names: list[str],
+    tile_size: int = 256,
+    n_threads: int = 20,
+):
+    """
+    Generate a pyramidal OME-TIFF file from multiple input TIFF files.
+
+    This function combines multiple input TIFF files into a single multi-channel
+    OME-TIFF file, adds channel metadata, and builds a multi-resolution pyramid
+    for efficient visualization and processing.
+    ( https://github.com/labsyspharm/ome-tiff-pyramid-tools)
+
+    Parameters
+    ----------
+    paths_tiff : list of str
+        A list of file paths to the input TIFF images. Each file corresponds
+        to a specific channel in the final OME-TIFF.
+    path_ometiff : str
+        Path to the output OME-TIFF file. If the file already exists, the process
+        will terminate to prevent overwriting.
+    channel_names : list of str
+        Names of the channels in the OME-TIFF file. Each name corresponds to a TIFF
+        file in `input_tiff_paths`. The length of this list must match the number
+        of files in `input_tiff_paths`.
+    tile_size : int, optional, default=256
+        The width and height of tiles in the pyramidal TIFF. Smaller tile sizes
+        can improve performance in certain scenarios.
+    n_threads : int, optional, default=20
+        The number of threads to use for downsampling images and constructing the
+        pyramid. Higher values can improve performance on multi-core systems.
+    """
+    args = [
+        *paths_tiff,
+        path_ometiff,
+        "--channel-names",
+        *channel_names,
+        "--tile-size",
+        str(tile_size),
+        "--num-threads",
+        str(n_threads),
+    ]
+    pyramid_assemble(args)
+
+
+def export_ometiff_pyramid_from_dict(
+    marker_dict: dict[str, np.ndarray],
+    path_ometiff: str,
+    **kwargs,
+):
+    """
+    Generate a pyramidal OME-TIFF file from a dictionary of marker images.
+
+    Parameters
+    ----------
+    marker_dict : dict of str to np.ndarray
+        A dictionary where keys are channel names and values are 2D numpy arrays
+        representing the marker images.
+    path_ometiff : str
+        Path to the output OME-TIFF file.
+    """
+    dir_output = os.path.dirname(path_ometiff)
+    temp_dir = tempfile.mkdtemp(dir=dir_output)
+
+    paths_im = []
+    names_im = []
+
+    try:
+        for name, im in marker_dict.items():
+            # Ensure filenames are unique
+            safe_name = re.sub(r"[^\w\-_.]", "_", name)  # Remove unsafe characters
+            path_im = os.path.join(temp_dir, f"{safe_name}.tiff")
+            tifffile.imwrite(path_im, im)
+            paths_im.append(path_im)
+            names_im.append(name)
+
+        # Call the pyramid export function
+        export_ometiff_pyramid(
+            paths_tiff=paths_im,
+            path_ometiff=path_ometiff,
+            channel_names=names_im,
+            **kwargs,
+        )
+    finally:
+        # Ensure temporary directory is cleaned up
+        shutil.rmtree(temp_dir, ignore_errors=True)
