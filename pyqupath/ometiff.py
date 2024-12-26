@@ -521,7 +521,7 @@ def export_ometiff_pyramid_from_dict(
 
 
 ###############################################################################
-# OME-TIFF metadata
+# OME-TIFF io
 ###############################################################################
 
 
@@ -553,5 +553,27 @@ def extract_channels_from_ometiff(path_ometiff):
         channel_id = channel.get("ID")
         name = channel.get("Name")
         channels.append({"ID": channel_id, "Name": name})
-
     return pd.DataFrame(channels)
+
+
+def ometiff_page_generator(path_ometiff):
+    """
+    Generator to read an OME-TIFF file page by page.
+
+    This function allows you to process each page (or layer) of an OME-TIFF file
+    one at a time, which is useful for handling large files without loading the
+    entire dataset into memory.
+
+    Parameters
+    ----------
+    path_ometiff : str
+        Path to the OME-TIFF file.
+
+    Yields
+    ------
+    numpy.ndarray
+        A NumPy array representing each page (or frame) of the OME-TIFF file.
+    """
+    with tifffile.TiffFile(path_ometiff) as tif:
+        for page in tif.pages:
+            yield page.asarray()
