@@ -633,7 +633,7 @@ def extract_channels_from_qptiff(path_qptiff):
 ###############################################################################
 
 
-def tifffile_highest_resolution_generator(path):
+def tifffile_highest_resolution_generator(path, asarray=False):
     """
     Generator to read the highest resolution level of a multi-page TIFF file.
 
@@ -644,6 +644,9 @@ def tifffile_highest_resolution_generator(path):
     ----------
     path : str
         Path to the TIFF file.
+    asarray : bool, optional
+        If True, the generator yields each page as a NumPy array. If False,
+        the generator yields each page as a TiffPage object. Default is False.
 
     Yields
     ------
@@ -656,7 +659,10 @@ def tifffile_highest_resolution_generator(path):
         # Access the first series (highest resolution)
         series = tif.series[0]
         for page in series.pages:
-            yield page.asarray()
+            if asarray:
+                yield page.asarray()
+            else:
+                yield page
 
 
 def load_ometiff(path_ometiff: str) -> dict[str, np.ndarray]:
