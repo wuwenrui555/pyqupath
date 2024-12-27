@@ -19,6 +19,7 @@ import skimage.transform
 import tifffile
 import zarr
 
+
 ###############################################################################
 # OME-TIFF writer
 # https://github.com/labsyspharm/ome-tiff-pyramid-tools/blob/master/pyramid_assemble.py
@@ -520,6 +521,49 @@ def export_ometiff_pyramid_from_dict(
         tile_size=tile_size,
         num_threads=num_threads,
     )
+
+
+def export_ometiff_pyramid_from_qptiff(
+    path_qptiff: str,
+    path_ometiff: str,
+    path_markerlist: str = None,
+):
+    """
+    Export OME-TIFF pyramid from QPTIFF file.
+
+    This function converts a QPTIFF file into an OME-TIFF pyramid format,
+    extracting marker information either from the QPTIFF file itself or
+    from a provided marker list file.
+
+    Parameters
+    ----------
+    path_qptiff : str
+        Path to the input QPTIFF file.
+    path_ometiff : str
+        Path to save the output OME-TIFF file.
+    path_markerlist : str, optional
+        Path to a marker list file. If None (default), marker names will be
+        extracted directly from the QPTIFF file.
+    """
+    if not pathlib.Path(path_qptiff).exists():
+        raise FileNotFoundError(f"QPTIFF not found: {path_qptiff}")
+
+    # Extract marker names
+    if path_markerlist is None:
+        markers_name = extract_channels_from_qptiff(path_qptiff)
+    else:
+        if not pathlib.Path(path_markerlist).exists():
+            raise FileNotFoundError(f"Marker list file not found: {path_markerlist}")
+        with open(path_markerlist, "r") as f:
+            markers_name = f.read().splitlines()
+
+    # Read QPTIFF file and organize data
+    im = tifffile.imread(path_qptiff)
+    im_dict = OrderedDict((markers_name[i], im[i]) for i in range(im.shape[0]))
+
+    # Export OME-TIFF pyramid
+    pathlib.Path(path_ometiff).parent.mkdir(parents=True, exist_ok=True)
+    export_ometiff_pyramid_from_dict(im_dict, path_ometiff, markers_name)
 
 
 ###############################################################################
