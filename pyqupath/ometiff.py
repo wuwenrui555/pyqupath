@@ -3,6 +3,7 @@ from __future__ import division, print_function
 import argparse
 import concurrent.futures
 import itertools
+import json
 import multiprocessing
 import os
 import pathlib
@@ -10,13 +11,13 @@ import re
 import sys
 import uuid
 import xml.etree.ElementTree as ET
+from collections import OrderedDict
 
 import numpy as np
 import pandas as pd
 import skimage.transform
 import tifffile
 import zarr
-from collections import OrderedDict
 
 ###############################################################################
 # OME-TIFF writer
@@ -522,8 +523,60 @@ def export_ometiff_pyramid_from_dict(
 
 
 ###############################################################################
-# OME-TIFF io
+# metadata extraction
 ###############################################################################
+
+
+def parse_xml_string_ometiff(xml_string):
+    """
+    Parse an XML string from an OME-TIFF file to extract metadata.
+
+    Parameters
+    ----------
+    xml_string : str
+        The XML string containing the OME-TIFF metadata.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame containing channel metadata.
+    """
+    root = ET.fromstring(xml_string)
+    channels = root.findall(".//{*}Channel")
+    metadata = pd.DataFrame([channel.attrib for channel in channels])
+    return metadata
+
+
+def parse_xml_string_qptiff(xml_string):
+    """
+    Parse an XML string from a QPTIFF file to extract metadata.
+
+    Parameters
+    ----------
+    xml_string : str
+        The XML string containing the QPTIFF metadata.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame containing metadata.
+    """
+    root = ET.fromstring(xml_string)
+
+    scan_profile = root.find(".//ScanProfile")
+    if scan_profile is None:
+        raise ValueError("ScanProfile element not found in the provided XML string.")
+
+    scan_profile_data = json.loads(scan_profile.text)
+    wells = scan_profile_data.get("experimentDescription").get("wells")
+    metadata = pd.concat(
+        [
+            pd.DataFrame(well.get("items")).assign(wellName=well.get("wellName"))
+            for well in wells
+        ],
+        ignore_index=True,
+    )
+    return metadata
 
 
 def extract_channels_from_ometiff(path_ometiff):
@@ -538,45 +591,71 @@ def extract_channels_from_ometiff(path_ometiff):
     Returns
     -------
     pd.DataFrame
-        A DataFrame containing channel metadata with the following columns:
-        - "ID": The unique identifier of the channel.
-        - "Name": The name of the channel.
+        A DataFrame containing channel metadata.
     """
     with tifffile.TiffFile(path_ometiff) as im:
-        xml_str = im.ome_metadata
-
-    # Parse the XML string into an ElementTree object
-    root = ET.fromstring(xml_str)
-
-    # Extract channel metadata
-    channels = []
-    for channel in root.findall(".//{*}Channel"):
-        channel_id = channel.get("ID")
-        name = channel.get("Name")
-        channels.append({"ID": channel_id, "Name": name})
-    return pd.DataFrame(channels)
+        xml_string = im.ome_metadata
+    metadata = parse_xml_string_ometiff(xml_string)
+    channels = metadata["Name"].tolist()
+    return channels
 
 
-def ometiff_page_generator(path_ometiff):
+def extract_channels_from_qptiff(path_qptiff):
     """
-    Generator to read an OME-TIFF file page by page.
-
-    This function allows you to process each page (or layer) of an OME-TIFF file
-    one at a time, which is useful for handling large files without loading the
-    entire dataset into memory.
+    Extract channel metadata from an OME-TIFF file.
 
     Parameters
     ----------
     path_ometiff : str
         Path to the OME-TIFF file.
 
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame containing channel metadata.
+    """
+    with tifffile.TiffFile(path_qptiff) as im:
+        series = im.series[0]
+        xml_string = series.pages[0].tags["ImageDescription"].value
+        metadata = parse_xml_string_qptiff(xml_string)
+        channels = (
+            metadata.loc[
+                (metadata["markerName"] != "--") & (metadata["panel"] != "Inventoried")
+            ]
+            .drop_duplicates(["id", "markerName"])["markerName"]
+            .tolist()
+        )
+    return channels
+
+
+###############################################################################
+# io
+###############################################################################
+
+
+def tifffile_highest_resolution_generator(path):
+    """
+    Generator to read the highest resolution level of a multi-page TIFF file.
+
+    This function processes only the highest resolution level (first series)
+    of a multi-page TIFF file, yielding each page (or frame) as a NumPy array.
+
+    Parameters
+    ----------
+    path : str
+        Path to the TIFF file.
+
     Yields
     ------
     numpy.ndarray
-        A NumPy array representing each page (or frame) of the OME-TIFF file.
+        A NumPy array representing each page (or frame) in the highest resolution level.
     """
-    with tifffile.TiffFile(path_ometiff) as tif:
-        for page in tif.pages:
+    import tifffile
+
+    with tifffile.TiffFile(path) as tif:
+        # Access the first series (highest resolution)
+        series = tif.series[0]
+        for page in series.pages:
             yield page.asarray()
 
 
@@ -595,9 +674,8 @@ def load_ometiff(path_ometiff: str) -> dict[str, np.ndarray]:
         A dictionary where keys are channel names and values are 2D numpy arrays
         representing the images.
     """
-    channel_names = extract_channels_from_ometiff(path_ometiff)["Name"].tolist()
+    channel_names = extract_channels_from_ometiff(path_ometiff)
     im_dict = OrderedDict()
-    with tifffile.TiffFile(path_ometiff) as tif:
-        for i, page in enumerate(tif.pages):
-            im_dict[channel_names[i]] = page.asarray()
+    for im in tifffile_highest_resolution_generator(path_ometiff):
+        im_dict[channel_names.pop(0)] = im
     return im_dict
