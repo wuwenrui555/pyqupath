@@ -797,7 +797,10 @@ def load_tiff_to_dict(
         )
         names = channels_name if channels_rename is None else channels_rename
         im_dict = OrderedDict(
-            (names[i], im) for i, im in tqdm(enumerate(im_generator), total=len(index))
+            (names[i], im)
+            for i, im in tqdm(
+                enumerate(im_generator), total=len(index), desc="Loading images"
+            )
         )
 
     return im_dict
