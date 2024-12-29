@@ -3,6 +3,7 @@ from __future__ import division, print_function
 import argparse
 import concurrent.futures
 import itertools
+import json
 import multiprocessing
 import os
 import pathlib
@@ -10,15 +11,17 @@ import re
 import sys
 import uuid
 import xml.etree.ElementTree as ET
+from collections import OrderedDict
 
 import numpy as np
 import pandas as pd
 import skimage.transform
 import tifffile
 import zarr
+from tqdm import tqdm
 
 ###############################################################################
-# OME-TIFF writer
+# pyramidal OME-TIFF writer
 # https://github.com/labsyspharm/ome-tiff-pyramid-tools/blob/master/pyramid_assemble.py
 ###############################################################################
 
@@ -490,7 +493,7 @@ def export_ometiff_pyramid_from_dict(
     num_threads: int = 20,
 ) -> str:
     """
-    Generate a pyramidal OME-TIFF file from a dictionary of marker images.
+    Generate a pyramidal OME-TIFF file from a dictionary of images.
 
     Parameters
     ----------
@@ -520,14 +523,109 @@ def export_ometiff_pyramid_from_dict(
     )
 
 
-###############################################################################
-# OME-TIFF metadata
-###############################################################################
-
-
-def extract_channels_from_ometiff(path_ometiff):
+def export_ometiff_pyramid_from_qptiff(
+    path_qptiff: str,
+    path_ometiff: str,
+    path_markerlist: str = None,
+):
     """
-    Extract channel metadata from an OME-TIFF file.
+    Generate a pyramidal OME-TIFF file from a QPTIFF file.
+
+    This function converts a QPTIFF file into an OME-TIFF pyramid format,
+    extracting marker information either from the QPTIFF file itself or
+    from a provided marker list file.
+
+    Parameters
+    ----------
+    path_qptiff : str
+        Path to the input QPTIFF file.
+    path_ometiff : str
+        Path to save the output OME-TIFF file.
+    path_markerlist : str, optional
+        Path to a marker list file. If None (default), marker names will be
+        extracted directly from the QPTIFF file.
+    """
+    if not pathlib.Path(path_qptiff).exists():
+        raise FileNotFoundError(f"QPTIFF not found: {path_qptiff}")
+
+    # Extract marker names
+    if path_markerlist is None:
+        markers_name = extract_channels_from_qptiff(path_qptiff)
+    else:
+        if not pathlib.Path(path_markerlist).exists():
+            raise FileNotFoundError(f"Marker list file not found: {path_markerlist}")
+        with open(path_markerlist, "r") as f:
+            markers_name = f.read().splitlines()
+
+    # Read QPTIFF file and organize data
+    im = tifffile.imread(path_qptiff)
+    im_dict = OrderedDict((markers_name[i], im[i]) for i in range(im.shape[0]))
+
+    # Export OME-TIFF pyramid
+    pathlib.Path(path_ometiff).parent.mkdir(parents=True, exist_ok=True)
+    export_ometiff_pyramid_from_dict(im_dict, path_ometiff, markers_name)
+
+
+###############################################################################
+# metadata extraction
+###############################################################################
+
+
+def parse_xml_string_ometiff(xml_string):
+    """
+    Parse an XML string from an OME-TIFF file to extract metadata.
+
+    Parameters
+    ----------
+    xml_string : str
+        The XML string containing the OME-TIFF metadata.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame containing channel metadata.
+    """
+    root = ET.fromstring(xml_string)
+    channels = root.findall(".//{*}Channel")
+    metadata = pd.DataFrame([channel.attrib for channel in channels])
+    return metadata
+
+
+def parse_xml_string_qptiff(xml_string):
+    """
+    Parse an XML string from a QPTIFF file to extract metadata.
+
+    Parameters
+    ----------
+    xml_string : str
+        The XML string containing the QPTIFF metadata.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame containing metadata.
+    """
+    root = ET.fromstring(xml_string)
+
+    scan_profile = root.find(".//ScanProfile")
+    if scan_profile is None:
+        raise ValueError("ScanProfile element not found in the provided XML string.")
+
+    scan_profile_data = json.loads(scan_profile.text)
+    wells = scan_profile_data.get("experimentDescription").get("wells")
+    metadata = pd.concat(
+        [
+            pd.DataFrame(well.get("items")).assign(wellName=well.get("wellName"))
+            for well in wells
+        ],
+        ignore_index=True,
+    )
+    return metadata
+
+
+def extract_channels_from_ometiff(path_ometiff: str) -> list[str]:
+    """
+    Extract channel names from an OME-TIFF file.
 
     Parameters
     ----------
@@ -536,22 +634,173 @@ def extract_channels_from_ometiff(path_ometiff):
 
     Returns
     -------
-    pd.DataFrame
-        A DataFrame containing channel metadata with the following columns:
-        - "ID": The unique identifier of the channel.
-        - "Name": The name of the channel.
+    list of str
+        A list of channel names.
     """
     with tifffile.TiffFile(path_ometiff) as im:
-        xml_str = im.ome_metadata
+        xml_string = im.ome_metadata
+    metadata = parse_xml_string_ometiff(xml_string)
+    channels = metadata["Name"].tolist()
+    return channels
 
-    # Parse the XML string into an ElementTree object
-    root = ET.fromstring(xml_str)
 
-    # Extract channel metadata
-    channels = []
-    for channel in root.findall(".//{*}Channel"):
-        channel_id = channel.get("ID")
-        name = channel.get("Name")
-        channels.append({"ID": channel_id, "Name": name})
+def extract_channels_from_qptiff(path_qptiff: str) -> list[str]:
+    """
+    Extract channel names from a QPTIFF file.
 
-    return pd.DataFrame(channels)
+    Parameters
+    ----------
+    path_ometiff : str
+        Path to the OME-TIFF file.
+
+    Returns
+    -------
+    list of str
+        A list of channel names.
+    """
+    with tifffile.TiffFile(path_qptiff) as im:
+        series = im.series[0]
+        xml_string = series.pages[0].tags["ImageDescription"].value
+        metadata = parse_xml_string_qptiff(xml_string)
+        channels = (
+            metadata.loc[
+                (metadata["markerName"] != "--") & (metadata["panel"] != "Inventoried")
+            ]
+            .drop_duplicates(["id", "markerName"])["markerName"]
+            .tolist()
+        )
+    return channels
+
+
+###############################################################################
+# tiff reader
+###############################################################################
+
+
+def tiff_highest_resolution_generator(
+    path: str, asarray: bool = False, index: list[int] = None
+):
+    """
+    Generator to read the highest resolution level of a multi-page TIFF file.
+
+    This function processes only the highest resolution level (first series)
+    of a multi-page TIFF file, yielding each page (or frame) as a NumPy array.
+
+    Parameters
+    ----------
+    path : str
+        Path to the TIFF file.
+    asarray : bool, optional
+        If True, the generator yields each page as a NumPy array. If False,
+        the generator yields each page as a TiffPage object. Default is False.
+    index : list[int], optional
+        List of indices of the pages to process. If None, all pages are processed.
+
+    Yields
+    ------
+    numpy.ndarray
+        A NumPy array representing each page (or frame) in the highest resolution level.
+    """
+    with tifffile.TiffFile(path) as tif:
+        # Access the first series (highest resolution)
+        series = tif.series[0]
+
+        # Pages to process
+        if index is None:
+            pages = series.pages
+        else:
+            pages = series.pages[index]
+
+        # Yield each page
+        for page in pages:
+            if asarray:
+                yield page.asarray()
+            else:
+                yield page
+
+
+def load_tiff_to_dict(
+    path_tiff,
+    filetype,
+    channels_order: list[str] = None,
+    channels_rename: list[str] = None,
+    path_markerlist: str = None,
+) -> OrderedDict[str, np.ndarray]:
+    """
+    Load a multi-channel TIFF file into a dictionary of channel images.
+
+    Parameters
+    ----------
+    path_tiff : str
+        Path to the TIFF file.
+    filetype : str
+        Filetype of the TIFF file. Must be either "qptiff" or "ome.tiff".
+    channels_order : list[str], optional
+        List of channel names in the desired order. If None, the channels will
+        be loaded in the order they appear in the TIFF file or the marker list
+        file (if provided). Default is None.
+    channels_rename : list[str], optional
+        List of new channel names. If provided, the channel names will be
+        renamed according to this list. The length of `channels_rename` must
+        match `channels_order`. Default is None.
+    path_markerlist : str, optional
+        Path to the marker list file. If provided, the channel names will be
+        extracted from the marker list file. Default is None.
+
+    Returns
+    -------
+    OrderedDict[str, np.ndarray]
+        An ordered dictionary where keys are channel names (renamed if
+        `channels_rename` is provided) and values are corresponding image arrays.
+    """
+    # Step 1: Extract channel names
+    if path_markerlist is None:
+        if filetype == "qptiff":
+            channels_name = extract_channels_from_qptiff(path_tiff)
+        elif filetype == "ome.tiff":
+            channels_name = extract_channels_from_ometiff(path_tiff)
+        else:
+            raise ValueError("Filetype must be either 'qptiff' or 'ome.tiff'")
+    else:
+        channels_name = np.loadtxt(path_markerlist, dtype=str).tolist()
+
+    # Default to loading in original order if `channels_order` is not specified
+    if channels_order is None:
+        channels_order = channels_name
+
+    # Step 2: Validate channels_order against channels_name
+    missing_markers = set(channels_order) - set(channels_name)
+    if missing_markers:
+        raise ValueError(
+            f"The following markers are not found in the TIFF file: {missing_markers}"
+        )
+
+    # Step 3: Validate channels_rename if provided
+    if channels_rename:
+        if len(channels_rename) != len(channels_order):
+            raise ValueError(
+                "The length of `channels_rename` must match `channels_order`."
+            )
+
+    # Step 4: Load the image data
+    ## All channels are requested, no reordering needed
+    if set(channels_name) == set(channels_order):
+        im = tifffile.imread(path_tiff)  # faster than using generator
+        im_dict = OrderedDict((channels_name[i], im[i]) for i in range(im.shape[0]))
+        if channels_name != channels_order:
+            im_dict = OrderedDict((name, im_dict[name]) for name in channels_order)
+    ## Only a subset of channels is requested
+    else:
+        index = [channels_name.index(channel) for channel in channels_order]
+        im_generator = tiff_highest_resolution_generator(
+            path_tiff, asarray=True, index=index
+        )
+        names = channels_name if channels_rename is None else channels_rename
+        im_dict = OrderedDict(
+            (names[i], im)
+            for i, im in tqdm(
+                enumerate(im_generator), total=len(index), desc="Loading images"
+            )
+        )
+
+    return im_dict
