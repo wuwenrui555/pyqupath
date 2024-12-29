@@ -554,9 +554,9 @@ def export_ometiff_pyramid_from_qptiff(
     else:
         if not pathlib.Path(path_markerlist).exists():
             raise FileNotFoundError(f"Marker list file not found: {path_markerlist}")
-        with open(path_markerlist, "r") as f:
-            markers_name = f.read().splitlines()
-
+        else: 
+            markers_name = np.loadtxt(path_markerlist, dtype=str).tolist()
+        
     # Read QPTIFF file and organize data
     im = tifffile.imread(path_qptiff)
     im_dict = OrderedDict((markers_name[i], im[i]) for i in range(im.shape[0]))
