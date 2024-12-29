@@ -58,7 +58,7 @@ def polygon_to_mask(
     shape: tuple[int, int],
 ) -> np.ndarray:
     """
-    Generate a binary mask from a polygon using rasterize.
+    Generate a binary mask from a polygon.
 
     Parameters
     ----------
@@ -139,7 +139,7 @@ def mask_to_geojson(
     simplify_shapely_tolerance: float = None,
 ):
     """
-    Convert a labeled segmentation mask into a compact GeoJSON file.
+    Convert a labeled mask into a GeoJSON file.
 
     Parameters
     ----------
@@ -311,7 +311,7 @@ def mask_to_geojson_joblib(
     annotation_dict: dict[int, str] = {},
 ):
     """
-    Convert a segmentation mask into a GeoJSON file using parallel processing.
+    Convert a labeled mask into a GeoJSON file using parallel processing.
 
     Parameters
     ----------

@@ -21,7 +21,7 @@ import zarr
 from tqdm import tqdm
 
 ###############################################################################
-# OME-TIFF writer
+# pyramidal OME-TIFF writer
 # https://github.com/labsyspharm/ome-tiff-pyramid-tools/blob/master/pyramid_assemble.py
 ###############################################################################
 
@@ -493,7 +493,7 @@ def export_ometiff_pyramid_from_dict(
     num_threads: int = 20,
 ) -> str:
     """
-    Generate a pyramidal OME-TIFF file from a dictionary of marker images.
+    Generate a pyramidal OME-TIFF file from a dictionary of images.
 
     Parameters
     ----------
@@ -529,7 +529,7 @@ def export_ometiff_pyramid_from_qptiff(
     path_markerlist: str = None,
 ):
     """
-    Export OME-TIFF pyramid from QPTIFF file.
+    Generate a pyramidal OME-TIFF file from a QPTIFF file.
 
     This function converts a QPTIFF file into an OME-TIFF pyramid format,
     extracting marker information either from the QPTIFF file itself or
@@ -623,9 +623,9 @@ def parse_xml_string_qptiff(xml_string):
     return metadata
 
 
-def extract_channels_from_ometiff(path_ometiff):
+def extract_channels_from_ometiff(path_ometiff: str) -> list[str]:
     """
-    Extract channel metadata from an OME-TIFF file.
+    Extract channel names from an OME-TIFF file.
 
     Parameters
     ----------
@@ -634,8 +634,8 @@ def extract_channels_from_ometiff(path_ometiff):
 
     Returns
     -------
-    pd.DataFrame
-        A DataFrame containing channel metadata.
+    list of str
+        A list of channel names.
     """
     with tifffile.TiffFile(path_ometiff) as im:
         xml_string = im.ome_metadata
@@ -644,9 +644,9 @@ def extract_channels_from_ometiff(path_ometiff):
     return channels
 
 
-def extract_channels_from_qptiff(path_qptiff):
+def extract_channels_from_qptiff(path_qptiff: str) -> list[str]:
     """
-    Extract channel metadata from an OME-TIFF file.
+    Extract channel names from a QPTIFF file.
 
     Parameters
     ----------
@@ -655,8 +655,8 @@ def extract_channels_from_qptiff(path_qptiff):
 
     Returns
     -------
-    pd.DataFrame
-        A DataFrame containing channel metadata.
+    list of str
+        A list of channel names.
     """
     with tifffile.TiffFile(path_qptiff) as im:
         series = im.series[0]
@@ -673,11 +673,11 @@ def extract_channels_from_qptiff(path_qptiff):
 
 
 ###############################################################################
-# io
+# tiff reader
 ###############################################################################
 
 
-def tifffile_highest_resolution_generator(
+def tiff_highest_resolution_generator(
     path: str, asarray: bool = False, index: list[int] = None
 ):
     """
@@ -792,7 +792,7 @@ def load_tiff_to_dict(
     ## Only a subset of channels is requested
     else:
         index = [channels_name.index(channel) for channel in channels_order]
-        im_generator = tifffile_highest_resolution_generator(
+        im_generator = tiff_highest_resolution_generator(
             path_tiff, asarray=True, index=index
         )
         names = channels_name if channels_rename is None else channels_rename
