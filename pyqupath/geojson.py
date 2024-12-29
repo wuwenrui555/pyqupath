@@ -1,10 +1,12 @@
 import json
+from collections import OrderedDict
+from typing import Generator
 
 import cv2
 import geopandas as gpd
 import numpy as np
-from rasterio.features import rasterize
 from joblib import Parallel, delayed
+from rasterio.features import rasterize
 from shapely.geometry import Polygon, mapping
 from tqdm import tqdm
 from tqdm_joblib import tqdm_joblib
@@ -359,3 +361,65 @@ def mask_to_geojson_joblib(
     geojson = {"type": "FeatureCollection", "features": features}
     with open(geojson_path, "w") as f:
         json.dump(geojson, f)
+
+
+################################################################################
+# Crop images by GeoJSON
+################################################################################
+
+
+def crop_dict_by_geojson(
+    im_dict: OrderedDict[str, np.ndarray],
+    path_geojson: str,
+) -> Generator[tuple[str, OrderedDict[str, np.ndarray]], None, None]:
+    """
+    Crop regions from images in a dictionary using polygons from a GeoJSON file.
+
+    This function takes an ordered dictionary of images and a GeoJSON file path.
+    For each polygon in the GeoJSON, it crops the region specified by the polygon
+    and applies a mask to keep only the pixels inside the polygon.
+
+    Parameters
+    ----------
+    im_dict : OrderedDict[str, np.ndarray]
+        A dictionary where keys are channel names and values are 2D NumPy arrays
+        representing image channels.
+    path_geojson : str
+        Path to the GeoJSON file containing the polygons for cropping.
+
+    Yields
+    ------
+    Tuple[str, OrderedDict[str, np.ndarray]]
+        A tuple where the first element is the name of the region (from the GeoJSON),
+        and the second element is an ordered dictionary containing the cropped
+        and masked regions for each image channel.
+    """
+    # Get the shape of the images (assume all images have the same shape)
+    im_shape = next(iter(im_dict.values())).shape
+
+    # Load the GeoJSON file
+    gdf = load_geojson_to_gdf(path_geojson)
+
+    for _, row in tqdm(gdf.iterrows(), total=len(gdf), desc="Cropping regions"):
+        geometry, name = row[["geometry", "name"]]
+
+        # Skip non-polygon geometries
+        if not isinstance(geometry, Polygon):
+            print(f"Skipping {name} as it is not a polygon")
+            continue
+
+        # Step 1: Get bounds from the polygon
+        bounds = geometry.bounds  # (minx, miny, maxx, maxy)
+        minx, miny, maxx, maxy = map(int, bounds)
+
+        # Step 2: Create a mask for the polygon and apply it during cropping
+        mask = polygon_to_mask(geometry, im_shape)
+        cropped_mask = mask[miny:maxy, minx:maxx]
+
+        # Step 3: Crop the mask and apply it to each image channel
+        masked_cropped_im_dict = OrderedDict(
+            (name, im[miny:maxy, minx:maxx] * cropped_mask)
+            for name, im in im_dict.items()
+        )
+
+        yield name, masked_cropped_im_dict
