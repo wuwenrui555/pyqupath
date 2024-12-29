@@ -18,7 +18,7 @@ import pandas as pd
 import skimage.transform
 import tifffile
 import zarr
-
+from tqdm import tqdm
 
 ###############################################################################
 # OME-TIFF writer
@@ -677,7 +677,9 @@ def extract_channels_from_qptiff(path_qptiff):
 ###############################################################################
 
 
-def tifffile_highest_resolution_generator(path, asarray=False):
+def tifffile_highest_resolution_generator(
+    path: str, asarray: bool = False, index: list[int] = None
+):
     """
     Generator to read the highest resolution level of a multi-page TIFF file.
 
@@ -691,41 +693,111 @@ def tifffile_highest_resolution_generator(path, asarray=False):
     asarray : bool, optional
         If True, the generator yields each page as a NumPy array. If False,
         the generator yields each page as a TiffPage object. Default is False.
+    index : list[int], optional
+        List of indices of the pages to process. If None, all pages are processed.
 
     Yields
     ------
     numpy.ndarray
         A NumPy array representing each page (or frame) in the highest resolution level.
     """
-    import tifffile
-
     with tifffile.TiffFile(path) as tif:
         # Access the first series (highest resolution)
         series = tif.series[0]
-        for page in series.pages:
+
+        # Pages to process
+        if index is None:
+            pages = series.pages
+        else:
+            pages = series.pages[index]
+
+        # Yield each page
+        for page in pages:
             if asarray:
                 yield page.asarray()
             else:
                 yield page
 
 
-def load_ometiff(path_ometiff: str) -> dict[str, np.ndarray]:
+def load_tiff_to_dict(
+    path_tiff,
+    filetype,
+    channels_order: list[str] = None,
+    channels_rename: list[str] = None,
+    path_markerlist: str = None,
+) -> OrderedDict[str, np.ndarray]:
     """
-    Load an OME-TIFF file into a dictionary of channel images.
+    Load a multi-channel TIFF file into a dictionary of channel images.
 
     Parameters
     ----------
-    path_ometiff : str or pathlib.Path
-        Path to the OME-TIFF file.
+    path_tiff : str
+        Path to the TIFF file.
+    filetype : str
+        Filetype of the TIFF file. Must be either "qptiff" or "ome.tiff".
+    channels_order : list[str], optional
+        List of channel names in the desired order. If None, the channels will
+        be loaded in the order they appear in the TIFF file or the marker list
+        file (if provided). Default is None.
+    channels_rename : list[str], optional
+        List of new channel names. If provided, the channel names will be
+        renamed according to this list. The length of `channels_rename` must
+        match `channels_order`. Default is None.
+    path_markerlist : str, optional
+        Path to the marker list file. If provided, the channel names will be
+        extracted from the marker list file. Default is None.
 
     Returns
     -------
-    dict of str to np.ndarray
-        A dictionary where keys are channel names and values are 2D numpy arrays
-        representing the images.
+    OrderedDict[str, np.ndarray]
+        An ordered dictionary where keys are channel names (renamed if
+        `channels_rename` is provided) and values are corresponding image arrays.
     """
-    channel_names = extract_channels_from_ometiff(path_ometiff)
-    im_dict = OrderedDict()
-    for im in tifffile_highest_resolution_generator(path_ometiff):
-        im_dict[channel_names.pop(0)] = im
+    # Step 1: Extract channel names
+    if path_markerlist is None:
+        if filetype == "qptiff":
+            channels_name = extract_channels_from_qptiff(path_tiff)
+        elif filetype == "ome.tiff":
+            channels_name = extract_channels_from_ometiff(path_tiff)
+        else:
+            raise ValueError("Filetype must be either 'qptiff' or 'ome.tiff'")
+    else:
+        channels_name = np.loadtxt(path_markerlist, dtype=str).tolist()
+
+    # Default to loading in original order if `channels_order` is not specified
+    if channels_order is None:
+        channels_order = channels_name
+
+    # Step 2: Validate channels_order against channels_name
+    missing_markers = set(channels_order) - set(channels_name)
+    if missing_markers:
+        raise ValueError(
+            f"The following markers are not found in the TIFF file: {missing_markers}"
+        )
+
+    # Step 3: Validate channels_rename if provided
+    if channels_rename:
+        if len(channels_rename) != len(channels_order):
+            raise ValueError(
+                "The length of `channels_rename` must match `channels_order`."
+            )
+
+    # Step 4: Load the image data
+    ## All channels are requested, no reordering needed
+    if set(channels_name) == set(channels_order):
+        im = tifffile.imread(path_tiff)  # faster than using generator
+        im_dict = OrderedDict((channels_name[i], im[i]) for i in range(im.shape[0]))
+        if channels_name != channels_order:
+            im_dict = OrderedDict((name, im_dict[name]) for name in channels_order)
+    ## Only a subset of channels is requested
+    else:
+        index = [channels_name.index(channel) for channel in channels_order]
+        im_generator = tifffile_highest_resolution_generator(
+            path_tiff, asarray=True, index=index
+        )
+        names = channels_name if channels_rename is None else channels_rename
+        im_dict = OrderedDict(
+            (names[i], im) for i, im in tqdm(enumerate(im_generator), total=len(index))
+        )
+
     return im_dict
