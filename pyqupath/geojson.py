@@ -3,7 +3,7 @@ import json
 import cv2
 import geopandas as gpd
 import numpy as np
-import rasterio
+from rasterio.features import rasterize
 from joblib import Parallel, delayed
 from shapely.geometry import Polygon, mapping
 from tqdm import tqdm
@@ -76,7 +76,7 @@ def polygon_to_mask(
     height, width = shape
 
     # Rasterize the polygon
-    mask = rasterio.features.rasterize(
+    mask = rasterize(
         [(polygon, 1)],  # Each tuple contains a geometry and the value to burn
         out_shape=(height, width),
         fill=0,  # Value for pixels outside the polygon
