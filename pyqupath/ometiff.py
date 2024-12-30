@@ -118,8 +118,9 @@ def pyramid_assemble(args=None):
     tifffile.TIFF.MAXIOWORKERS = args.num_threads * 5
 
     in_imgs = []
-    print("Scanning input images")
-    for i, path in enumerate(in_paths, 1):
+    for i, path in tqdm(
+        enumerate(in_paths, 1), total=len(in_paths), desc="Loading images"
+    ):
         spath = str(path)
         if match := re.search(r",(\d+)$", spath):
             c = int(match.group(1))
@@ -173,11 +174,7 @@ def pyramid_assemble(args=None):
                     f"Expected dtype '{dtype}' to match first input image,"
                     f" got '{img_in.dtype}' instead.",
                 )
-        print(f"    file {i}")
-        print(f"        path: {spath}")
-        print(f"        properties: shape={img_in.shape} dtype={img_in.dtype}")
         in_imgs.extend(imgs)
-    print()
 
     num_channels = len(in_imgs)
     num_levels = np.ceil(np.log2(max(base_shape) / args.tile_size)) + 1
@@ -192,21 +189,12 @@ def pyramid_assemble(args=None):
             f" match number of channels in final image ({num_channels}).",
         )
 
-    print("Pyramid level sizes:")
-    for i, shape in enumerate(shapes):
-        print(f"    level {i + 1}: {format_shape(shape)}", end="")
-        if i == 0:
-            print(" (original size)", end="")
-        print()
-    print()
-
     pool = concurrent.futures.ThreadPoolExecutor(args.num_threads)
 
     def tiles0():
         ts = args.tile_size
         ch, cw = cshapes[0]
         for c, zimg in enumerate(in_imgs, 1):
-            print(f"    channel {c}")
             img = zimg[:]
             for j in range(ch):
                 for i in range(cw):
@@ -248,31 +236,32 @@ def pyramid_assemble(args=None):
                 "Channel": {"Name": args.channel_names},
             }
         )
-    print(f"Writing level 1: {format_shape(shapes[0])}")
     with tifffile.TiffWriter(args.out_path, ome=True, bigtiff=True) as writer:
-        writer.write(
-            data=tiles0(),
-            shape=(num_channels,) + tuple(shapes[0]),
-            subifds=num_levels - 1,
-            dtype=dtype,
-            tile=(args.tile_size, args.tile_size),
-            compression="adobe_deflate",
-            predictor=True,
-            metadata=metadata,
-        )
-        print()
-        for level, shape in enumerate(shapes[1:], 1):
-            print(f"Resizing image for level {level + 1}: {format_shape(shape)}")
-            writer.write(
-                data=tiles(level),
-                shape=(num_channels,) + tuple(shape),
-                subfiletype=1,
-                dtype=dtype,
-                tile=(args.tile_size, args.tile_size),
-                compression="adobe_deflate",
-                predictor=True,
-            )
-        print()
+        for level, shape in tqdm(
+            enumerate(shapes), total=len(shapes), desc="Writing images"
+        ):
+            if level == 0:
+                writer.write(
+                    data=tiles0(),
+                    shape=(num_channels,) + tuple(shapes[0]),
+                    subifds=num_levels - 1,
+                    dtype=dtype,
+                    tile=(args.tile_size, args.tile_size),
+                    compression="adobe_deflate",
+                    predictor=True,
+                    metadata=metadata,
+                )
+            else:
+                writer.write(
+                    data=tiles(level),
+                    shape=(num_channels,) + tuple(shape),
+                    subfiletype=1,
+                    dtype=dtype,
+                    tile=(args.tile_size, args.tile_size),
+                    compression="adobe_deflate",
+                    predictor=True,
+                )
+    print()
 
 
 def pyramid_assemble_from_dict(
@@ -355,21 +344,12 @@ def pyramid_assemble_from_dict(
             f" match number of channels in final image ({num_channels}).",
         )
 
-    print("Pyramid level sizes:")
-    for i, shape in enumerate(shapes):
-        print(f"    level {i + 1}: {format_shape(shape)}", end="")
-        if i == 0:
-            print(" (original size)", end="")
-        print()
-    print()
-
     pool = concurrent.futures.ThreadPoolExecutor(num_threads)
 
     def tiles0():
         ts = tile_size
         ch, cw = cshapes[0]
         for c, zimg in enumerate(in_imgs, 1):
-            print(f"    channel {c}")
             img = zimg[:]
             for j in range(ch):
                 for i in range(cw):
@@ -411,31 +391,32 @@ def pyramid_assemble_from_dict(
                 "Channel": {"Name": channel_names},
             }
         )
-    print(f"Writing level 1: {format_shape(shapes[0])}")
     with tifffile.TiffWriter(out_path, ome=True, bigtiff=True) as writer:
-        writer.write(
-            data=tiles0(),
-            shape=(num_channels,) + tuple(shapes[0]),
-            subifds=num_levels - 1,
-            dtype=dtype,
-            tile=(tile_size, tile_size),
-            compression="adobe_deflate",
-            predictor=True,
-            metadata=metadata,
-        )
-        print()
-        for level, shape in enumerate(shapes[1:], 1):
-            print(f"Resizing image for level {level + 1}: {format_shape(shape)}")
-            writer.write(
-                data=tiles(level),
-                shape=(num_channels,) + tuple(shape),
-                subfiletype=1,
-                dtype=dtype,
-                tile=(tile_size, tile_size),
-                compression="adobe_deflate",
-                predictor=True,
-            )
-        print()
+        for level, shape in tqdm(
+            enumerate(shapes), total=len(shapes), desc="Writing images"
+        ):
+            if level == 0:
+                writer.write(
+                    data=tiles0(),
+                    shape=(num_channels,) + tuple(shapes[0]),
+                    subifds=num_levels - 1,
+                    dtype=dtype,
+                    tile=(tile_size, tile_size),
+                    compression="adobe_deflate",
+                    predictor=True,
+                    metadata=metadata,
+                )
+            else:
+                writer.write(
+                    data=tiles(level),
+                    shape=(num_channels,) + tuple(shape),
+                    subfiletype=1,
+                    dtype=dtype,
+                    tile=(tile_size, tile_size),
+                    compression="adobe_deflate",
+                    predictor=True,
+                )
+    print()
 
 
 def export_ometiff_pyramid(
@@ -554,9 +535,9 @@ def export_ometiff_pyramid_from_qptiff(
     else:
         if not pathlib.Path(path_markerlist).exists():
             raise FileNotFoundError(f"Marker list file not found: {path_markerlist}")
-        else: 
+        else:
             markers_name = np.loadtxt(path_markerlist, dtype=str).tolist()
-        
+
     # Read QPTIFF file and organize data
     im = tifffile.imread(path_qptiff)
     im_dict = OrderedDict((markers_name[i], im[i]) for i in range(im.shape[0]))
