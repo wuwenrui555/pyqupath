@@ -183,6 +183,11 @@ def mask_to_geojson(
         )
 
         for contour in contours:
+            # Skip contours with insufficient points
+            if len(contour) < 4:
+                print(f"Skipping contour with insufficient points: {label}, {contour}")
+                continue
+
             if simplify_opencv_precision is not None:
                 # Simplify the contour using OpenCV's approxPolyDP
                 epsilon = simplify_opencv_precision * cv2.arcLength(contour, True)
@@ -237,6 +242,10 @@ def binary_mask_to_polygon(binary_mask: np.ndarray) -> Polygon:
         binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
     for contour in contours:
+        # Skip contours with insufficient points
+        if len(contour) < 4:
+            print(f"Skipping contour with insufficient points: {contour}")
+            continue
         polygon = Polygon(contour.squeeze(axis=1))
     return polygon
 
