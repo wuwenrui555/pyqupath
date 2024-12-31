@@ -776,7 +776,7 @@ def load_tiff_to_dict(
         im_generator = tiff_highest_resolution_generator(
             path_tiff, asarray=True, index=index
         )
-        names = channels_name if channels_rename is None else channels_rename
+        names = channels_order if channels_rename is None else channels_rename
         im_dict = OrderedDict(
             (names[i], im)
             for i, im in tqdm(
