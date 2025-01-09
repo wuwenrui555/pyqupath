@@ -5,11 +5,13 @@ from typing import Generator
 import cv2
 import geopandas as gpd
 import numpy as np
-from joblib import Parallel, delayed
+from joblib import delayed
 from rasterio.features import rasterize
 from shapely.geometry import Polygon, mapping
 from tqdm import tqdm
-from tqdm_joblib import tqdm_joblib
+from tqdm_joblib import ParallelPbar
+
+from pyqupath import constants
 
 ################################################################################
 # IO
@@ -169,7 +171,7 @@ def mask_to_geojson(
     color_map = assign_bright_colors(np.unique(list(annotation_dict.values())))
     color_map["Unknown"] = (128, 128, 128)  # Gray for unknown annotations
 
-    for label in tqdm(labels):
+    for label in tqdm(labels, bar_format=constants.TQDM_FORMAT):
         if label == 0:  # Skip background
             continue
 
@@ -303,13 +305,13 @@ def mask_to_polygons(
     ]
 
     # Process batches in parallel
-    with tqdm_joblib(
-        tqdm(desc="Mask to polygons", total=len(labels_batches), unit="batch")
-    ):
-        polygons_batches = Parallel(n_jobs=-1)(
-            delayed(mask_to_polygon_batch)(mask, labels_batch)
-            for labels_batch in labels_batches
-        )
+    polygons_batches = ParallelPbar(
+        desc="Mask to polygons",
+        bar_format=constants.TQDM_FORMAT,
+    )(n_jobs=-1)(
+        delayed(mask_to_polygon_batch)(mask, labels_batch)
+        for labels_batch in labels_batches
+    )
 
     # Flatten the list of batches into a single list
     polygons = [
@@ -411,7 +413,12 @@ def crop_dict_by_geojson(
     # Load the GeoJSON file
     gdf = load_geojson_to_gdf(path_geojson)
 
-    for _, row in tqdm(gdf.iterrows(), total=len(gdf), desc="Cropping regions"):
+    for _, row in tqdm(
+        gdf.iterrows(),
+        total=len(gdf),
+        desc="Cropping regions",
+        bar_format=constants.TQDM_FORMAT,
+    ):
         geometry, name = row[["geometry", "name"]]
 
         # Skip non-polygon geometries

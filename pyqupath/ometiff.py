@@ -20,6 +20,8 @@ import tifffile
 import zarr
 from tqdm import tqdm
 
+from pyqupath import constants
+
 ###############################################################################
 # pyramidal OME-TIFF writer
 # https://github.com/labsyspharm/ome-tiff-pyramid-tools/blob/master/pyramid_assemble.py
@@ -119,7 +121,10 @@ def pyramid_assemble(args=None):
 
     in_imgs = []
     for i, path in tqdm(
-        enumerate(in_paths, 1), total=len(in_paths), desc="Loading images"
+        enumerate(in_paths, 1),
+        total=len(in_paths),
+        desc="Loading images",
+        bar_format=constants.TQDM_FORMAT,
     ):
         spath = str(path)
         if match := re.search(r",(\d+)$", spath):
@@ -238,7 +243,10 @@ def pyramid_assemble(args=None):
         )
     with tifffile.TiffWriter(args.out_path, ome=True, bigtiff=True) as writer:
         for level, shape in tqdm(
-            enumerate(shapes), total=len(shapes), desc="Writing images"
+            enumerate(shapes),
+            total=len(shapes),
+            desc="Writing images",
+            bar_format=constants.TQDM_FORMAT,
         ):
             if level == 0:
                 writer.write(
@@ -393,7 +401,10 @@ def pyramid_assemble_from_dict(
         )
     with tifffile.TiffWriter(out_path, ome=True, bigtiff=True) as writer:
         for level, shape in tqdm(
-            enumerate(shapes), total=len(shapes), desc="Writing images"
+            enumerate(shapes),
+            total=len(shapes),
+            desc="Writing images",
+            bar_format=constants.TQDM_FORMAT,
         ):
             if level == 0:
                 writer.write(
@@ -780,7 +791,10 @@ def load_tiff_to_dict(
         im_dict = OrderedDict(
             (names[i], im)
             for i, im in tqdm(
-                enumerate(im_generator), total=len(index), desc="Loading images"
+                enumerate(im_generator),
+                total=len(index),
+                desc="Loading images",
+                bar_format=constants.TQDM_FORMAT,
             )
         )
 
