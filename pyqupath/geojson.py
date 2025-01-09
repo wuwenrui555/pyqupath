@@ -303,7 +303,9 @@ def mask_to_polygons(
     ]
 
     # Process batches in parallel
-    with tqdm_joblib(tqdm(desc="Processing", total=len(labels_batches), unit="batch")):
+    with tqdm_joblib(
+        tqdm(desc="Mask to polygons", total=len(labels_batches), unit="batch")
+    ):
         polygons_batches = Parallel(n_jobs=-1)(
             delayed(mask_to_polygon_batch)(mask, labels_batch)
             for labels_batch in labels_batches
