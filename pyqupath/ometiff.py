@@ -112,9 +112,7 @@ def pyramid_assemble(args=None):
             args.num_threads = len(os.sched_getaffinity(0))
         else:
             args.num_threads = multiprocessing.cpu_count()
-        print(
-            f"Using {args.num_threads} worker threads based on detected CPU" " count."
-        )
+        print(f"Using {args.num_threads} worker threads based on detected CPU count.")
         print()
     tifffile.TIFF.MAXWORKERS = args.num_threads
     tifffile.TIFF.MAXIOWORKERS = args.num_threads * 5
@@ -163,8 +161,7 @@ def pyramid_assemble(args=None):
             else:
                 error(
                     path,
-                    f"Can't handle dtype '{dtype}' yet, please contact the"
-                    f" authors.",
+                    f"Can't handle dtype '{dtype}' yet, please contact the authors.",
                 )
         else:
             if shape != base_shape:
@@ -312,7 +309,7 @@ def pyramid_assemble_from_dict(
             num_threads = len(os.sched_getaffinity(0))
         else:
             num_threads = multiprocessing.cpu_count()
-        print(f"Using {num_threads} worker threads based on detected CPU" " count.")
+        print(f"Using {num_threads} worker threads based on detected CPU count.")
         print()
     tifffile.TIFF.MAXWORKERS = num_threads
     tifffile.TIFF.MAXIOWORKERS = num_threads * 5
@@ -449,14 +446,15 @@ def export_ometiff_pyramid(
     ----------
     paths_tiff : list of str
         A list of file paths to the input TIFF images. Each file corresponds
-        to a specific channel in the final OME-TIFF.
+        to a specific channel in the final OME-TIFF. The order of the files
+        in the list determines the order of the channels in the OME-TIFF file.
     path_ometiff : str
         Path to the output OME-TIFF file. If the file already exists, the process
         will terminate to prevent overwriting.
     channel_names : list of str
         Names of the channels in the OME-TIFF file. Each name corresponds to a
-        channel in the `im_dict`. Default is None, meaning the channel names will
-        be the keys of the `im_dict`.
+        TIFF file in `paths_tiff`. The length of this list must match the number
+        of files in `paths_tiff`.
     tile_size : int, optional, default=256
         The width and height of tiles in the pyramidal TIFF. Smaller tile sizes
         can improve performance in certain scenarios.
@@ -496,9 +494,10 @@ def export_ometiff_pyramid_from_dict(
         Path to the output OME-TIFF file. If the file already exists, the process
         will terminate to prevent overwriting.
     channel_names : list of str
-        Names of the channels in the OME-TIFF file. Each name corresponds to a TIFF
-        file in `input_tiff_paths`. The length of this list must match the number
-        of files in `input_tiff_paths`.
+        Names of the channels in the OME-TIFF file. Each name corresponds to a
+        channel in the `im_dict`. The order of the `channel_names` determines
+        the order of the channels in the OME-TIFF file. Default is None, meaning
+        the `channel_names` will be the keys of the `im_dict`.
     tile_size : int, optional, default=256
         The width and height of tiles in the pyramidal TIFF. Smaller tile sizes
         can improve performance in certain scenarios.
