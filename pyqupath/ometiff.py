@@ -753,7 +753,9 @@ def load_tiff_to_dict(
         else:
             raise ValueError("Filetype must be either 'qptiff' or 'ome.tiff'")
     else:
-        channels_name = np.loadtxt(path_markerlist, dtype=str).tolist()
+        with open(path_markerlist) as f:
+            channels_name = f.readlines()
+            channels_name = [x.strip() for x in channels_name]
 
     # Default to loading in original order if `channels_order` is not specified
     if channels_order is None:
