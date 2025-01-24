@@ -507,13 +507,15 @@ def mask_to_geojson_joblib(
 def crop_dict_by_geojson(
     im_dict: OrderedDict[str, np.ndarray],
     path_geojson: str,
+    fill: float = 0,
 ) -> Generator[tuple[str, OrderedDict[str, np.ndarray]], None, None]:
     """
     Crop regions from images in a dictionary using polygons from a GeoJSON file.
 
     This function takes an ordered dictionary of images and a GeoJSON file path.
     For each polygon in the GeoJSON, it crops the region specified by the polygon
-    and applies a mask to keep only the pixels inside the polygon.
+    and applies a mask to keep only the pixels inside the polygon, while filling
+    the outside region with a specified value.
 
     Parameters
     ----------
@@ -522,13 +524,14 @@ def crop_dict_by_geojson(
         representing image channels.
     path_geojson : str
         Path to the GeoJSON file containing the polygons for cropping.
-
+    fill : float, optional
+        Value to fill in the masked areas outside the polygon. Default is 0.
     Yields
     ------
     Tuple[str, OrderedDict[str, np.ndarray]]
-        A tuple where the first element is the name of the region (from the GeoJSON),
-        and the second element is an ordered dictionary containing the cropped
-        and masked regions for each image channel.
+        A tuple where the first element is the name of the region (from the
+        GeoJSON), and the second element is an ordered dictionary containing the
+        cropped and masked regions for each image channel.
     """
     # Get the shape of the images (assume all images have the same shape)
     im_shape = next(iter(im_dict.values())).shape
@@ -557,10 +560,16 @@ def crop_dict_by_geojson(
         mask = polygon_to_mask(geometry, im_shape)
         cropped_mask = mask[min_y:max_y, min_x:max_x]
 
-        # Step 3: Crop the mask and apply it to each image channel
-        masked_cropped_im_dict = OrderedDict(
-            (name, im[min_y:max_y, min_x:max_x] * cropped_mask)
-            for name, im in im_dict.items()
-        )
+        # Step 3: Crop and apply the mask to each image channel
+        masked_cropped_im_dict = OrderedDict()
+        for channel_name, im in tqdm(
+            im_dict.items(),
+            total=len(im_dict),
+            desc="Cropping channels",
+            bar_format=constants.TQDM_FORMAT,
+        ):
+            cropped_im = im[min_y:max_y, min_x:max_x]
+            masked_cropped_im = np.where(cropped_mask, cropped_im, fill)
+            masked_cropped_im_dict[channel_name] = masked_cropped_im
 
         yield name, masked_cropped_im_dict
