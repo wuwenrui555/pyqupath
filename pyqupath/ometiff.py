@@ -653,10 +653,11 @@ def extract_channels_from_qptiff(path_qptiff: str) -> list[str]:
         series = im.series[0]
         xml_string = series.pages[0].tags["ImageDescription"].value
         metadata = parse_xml_string_qptiff(xml_string)
+        is_marker = (metadata["markerName"] != "--") & (
+            metadata["id"].apply(lambda x: re.search(r"^0+(-0+)+$", x.strip()) is None)
+        )
         channels = (
-            metadata.loc[
-                (metadata["markerName"] != "--") & (metadata["panel"] != "Inventoried")
-            ]
+            metadata.loc[is_marker]
             .drop_duplicates(["id", "markerName"])["markerName"]
             .tolist()
         )
