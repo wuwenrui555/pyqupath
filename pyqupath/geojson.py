@@ -7,7 +7,7 @@ import geopandas as gpd
 import numpy as np
 from joblib import delayed
 from rasterio.features import rasterize
-from shapely.geometry import Polygon, mapping
+from shapely.geometry import MultiPolygon, Polygon, mapping
 from tqdm import tqdm
 from tqdm_joblib import ParallelPbar
 
@@ -508,6 +508,9 @@ def crop_dict_by_geojson(
     im_dict: OrderedDict[str, np.ndarray],
     path_geojson: str,
     fill: float = 0,
+    multipolygon_rate: float = 100,
+    desc_region: str = "Cropping regions",
+    desc_channel: str = ">>Cropping channels",
 ) -> Generator[tuple[str, OrderedDict[str, np.ndarray]], None, None]:
     """
     Crop regions from images in a dictionary using polygons from a GeoJSON file.
@@ -516,6 +519,12 @@ def crop_dict_by_geojson(
     For each polygon in the GeoJSON, it crops the region specified by the polygon
     and applies a mask to keep only the pixels inside the polygon, while filling
     the outside region with a specified value.
+
+    If the geometry in the GeoJSON is a MultiPolygon, the function will attempt
+    to determine the main Polygon within the MultiPolygon by comparing the areas
+    of the polygons. If the area of the largest polygon is significantly larger
+    than the second largest polygon (determined by the `multipolygon_rate`), the
+    largest polygon will be used. Otherwise, the region will be skipped.
 
     Parameters
     ----------
@@ -526,6 +535,17 @@ def crop_dict_by_geojson(
         Path to the GeoJSON file containing the polygons for cropping.
     fill : float, optional
         Value to fill in the masked areas outside the polygon. Default is 0.
+    multipolygon_rate : float, optional
+        The ratio of the area of the largest polygon to the second largest polygon
+        within a MultiPolygon. If the ratio is greater than this value, the largest
+        polygon will be used. Default is 100.
+    desc_region : str, optional
+        Description for the cropping progress bar.
+        Default is "Cropping regions".
+    desc_channel : str, optional
+        Description for the channel cropping progress bar.
+        Default is "    Cropping channels".
+
     Yields
     ------
     Tuple[str, OrderedDict[str, np.ndarray]]
@@ -542,15 +562,34 @@ def crop_dict_by_geojson(
     for _, row in tqdm(
         gdf.iterrows(),
         total=len(gdf),
-        desc="Cropping regions",
+        desc=desc_region,
         bar_format=constants.TQDM_FORMAT,
     ):
         geometry, name = row[["geometry", "name"]]
 
         # Skip non-polygon geometries
         if not isinstance(geometry, Polygon):
-            print(f"Skipping {name} as it is not a polygon")
-            continue
+            if isinstance(geometry, MultiPolygon):
+                polygons = [
+                    polygon
+                    for polygon in geometry.geoms
+                    if isinstance(polygon, Polygon)
+                ]
+                areas = [polygon.area for polygon in polygons]
+                sorted_areas = sorted(areas, reverse=True)
+
+                largest_area = sorted_areas[0]
+                second_largest = sorted_areas[1]
+                if largest_area > second_largest * multipolygon_rate:
+                    geometry = polygons[areas.index(largest_area)]
+                else:
+                    print(
+                        f"Skipping {name}: cannot determine the main Polygon within the MultiPolygon"
+                    )
+                    continue
+            else:
+                print(f"Skipping {name}: not a Polygon or Multipolygon")
+                continue
 
         # Step 1: Get bounds from the polygon
         bounds = geometry.bounds  # (min_x, min_y, max_x, max_y)
@@ -565,7 +604,7 @@ def crop_dict_by_geojson(
         for channel_name, im in tqdm(
             im_dict.items(),
             total=len(im_dict),
-            desc="Cropping channels",
+            desc=desc_channel,
             bar_format=constants.TQDM_FORMAT,
         ):
             cropped_im = im[min_y:max_y, min_x:max_x]
