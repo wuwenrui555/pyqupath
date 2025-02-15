@@ -3,15 +3,14 @@ from __future__ import division, print_function
 import argparse
 import concurrent.futures
 import itertools
-import json
 import multiprocessing
 import os
 import pathlib
 import re
 import sys
 import uuid
-import xml.etree.ElementTree as ET
 from collections import OrderedDict
+from xml.etree import ElementTree
 
 import numpy as np
 import pandas as pd
@@ -558,60 +557,8 @@ def export_ometiff_pyramid_from_qptiff(
 
 
 ###############################################################################
-# metadata extraction
+# channel extraction
 ###############################################################################
-
-
-def parse_xml_string_ometiff(xml_string):
-    """
-    Parse an XML string from an OME-TIFF file to extract metadata.
-
-    Parameters
-    ----------
-    xml_string : str
-        The XML string containing the OME-TIFF metadata.
-
-    Returns
-    -------
-    pd.DataFrame
-        A DataFrame containing channel metadata.
-    """
-    root = ET.fromstring(xml_string)
-    channels = root.findall(".//{*}Channel")
-    metadata = pd.DataFrame([channel.attrib for channel in channels])
-    return metadata
-
-
-def parse_xml_string_qptiff(xml_string):
-    """
-    Parse an XML string from a QPTIFF file to extract metadata.
-
-    Parameters
-    ----------
-    xml_string : str
-        The XML string containing the QPTIFF metadata.
-
-    Returns
-    -------
-    pd.DataFrame
-        A DataFrame containing metadata.
-    """
-    root = ET.fromstring(xml_string)
-
-    scan_profile = root.find(".//ScanProfile")
-    if scan_profile is None:
-        raise ValueError("ScanProfile element not found in the provided XML string.")
-
-    scan_profile_data = json.loads(scan_profile.text)
-    wells = scan_profile_data.get("experimentDescription").get("wells")
-    metadata = pd.concat(
-        [
-            pd.DataFrame(well.get("items")).assign(wellName=well.get("wellName"))
-            for well in wells
-        ],
-        ignore_index=True,
-    )
-    return metadata
 
 
 def extract_channels_from_ometiff(path_ometiff: str) -> list[str]:
@@ -628,10 +575,11 @@ def extract_channels_from_ometiff(path_ometiff: str) -> list[str]:
     list of str
         A list of channel names.
     """
-    with tifffile.TiffFile(path_ometiff) as im:
-        xml_string = im.ome_metadata
-    metadata = parse_xml_string_ometiff(xml_string)
-    channels = metadata["Name"].tolist()
+    with tifffile.TiffFile(path_ometiff) as tif:
+        ome_metadata = ElementTree.fromstring(tif.ome_metadata)
+        ome_channels = ome_metadata.findall(".//{*}Channel")
+        metadata = pd.DataFrame([channel.attrib for channel in ome_channels])
+        channels = metadata["Name"].tolist()
     return channels
 
 
@@ -649,18 +597,11 @@ def extract_channels_from_qptiff(path_qptiff: str) -> list[str]:
     list of str
         A list of channel names.
     """
-    with tifffile.TiffFile(path_qptiff) as im:
-        series = im.series[0]
-        xml_string = series.pages[0].tags["ImageDescription"].value
-        metadata = parse_xml_string_qptiff(xml_string)
-        is_marker = (metadata["markerName"] != "--") & (
-            metadata["id"].apply(lambda x: re.search(r"^0+(-0+)+$", x.strip()) is None)
-        )
-        channels = (
-            metadata.loc[is_marker]
-            .drop_duplicates(["id", "markerName"])["markerName"]
-            .tolist()
-        )
+    channels = []
+    with tifffile.TiffFile(path_qptiff) as tif:
+        for page in tif.series[0].pages:
+            channel = ElementTree.fromstring(page.description).find("Name").text
+            channels.append(channel)
     return channels
 
 
