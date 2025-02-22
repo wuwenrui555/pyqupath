@@ -3,6 +3,7 @@ from __future__ import division, print_function
 import argparse
 import concurrent.futures
 import itertools
+import json
 import multiprocessing
 import os
 import pathlib
@@ -588,7 +589,53 @@ def extract_channels_from_ometiff(path_ometiff: str) -> list[str]:
 
 def extract_channels_from_qptiff(path_qptiff: str) -> list[str]:
     """
-    Extract channel names from a QPTIFF file.
+    Extract channel names from a final (er) QPTIFF file.
+
+    Parameters
+    ----------
+    path_ometiff : str
+        Path to the OME-TIFF file.
+
+    Returns
+    -------
+    list of str
+        A list of channel names.
+    """
+    with tifffile.TiffFile(path_qptiff) as im:
+        xml_string = im.series[0].pages[0].tags["ImageDescription"].value
+        scan_profile = ElementTree.fromstring(
+            xml_string).find(".//ScanProfile")
+        if scan_profile is None:
+            raise ValueError(
+                "ScanProfile element not found in the provided XML string."
+            )
+
+        scan_profile_data = json.loads(scan_profile.text)
+        wells = scan_profile_data.get("experimentDescription").get("wells")
+        qptiff_metadata = pd.concat(
+            [
+                pd.DataFrame(well.get("items")).assign(
+                    wellName=well.get("wellName"))
+                for well in wells
+            ],
+            ignore_index=True,
+        )
+        is_marker = (qptiff_metadata["markerName"] != "--") & (
+            qptiff_metadata["id"].apply(
+                lambda x: re.search(r"^0+(-0+)+$", x.strip()) is None
+            )
+        )
+        channels = (
+            qptiff_metadata.loc[is_marker]
+            .drop_duplicates(["id", "markerName"])["markerName"]
+            .tolist()
+        )
+    return channels
+
+
+def extract_channels_from_qptiff_raw(path_qptiff: str) -> list[str]:
+    """
+    Extract channel names from a raw QPTIFF file.
 
     Parameters
     ----------
