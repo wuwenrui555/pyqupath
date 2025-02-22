@@ -111,7 +111,8 @@ def pyramid_assemble(args=None):
             args.num_threads = len(os.sched_getaffinity(0))
         else:
             args.num_threads = multiprocessing.cpu_count()
-        print(f"Using {args.num_threads} worker threads based on detected CPU count.")
+        print(
+            f"Using {args.num_threads} worker threads based on detected CPU count.")
         print()
     tifffile.TIFF.MAXWORKERS = args.num_threads
     tifffile.TIFF.MAXIOWORKERS = args.num_threads * 5
@@ -199,7 +200,7 @@ def pyramid_assemble(args=None):
             img = zimg[:]
             for j in range(ch):
                 for i in range(cw):
-                    tile = img[ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+                    tile = img[ts * j: ts * (j + 1), ts * i: ts * (i + 1)]
                     yield tile
             del img
 
@@ -210,7 +211,7 @@ def pyramid_assemble(args=None):
 
         def tile(coords):
             c, j, i = coords
-            tile = zimg[c, ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+            tile = zimg[c, ts * j: ts * (j + 1), ts * i: ts * (i + 1)]
             tile = skimage.transform.downscale_local_mean(tile, (2, 2))
             tile = np.round(tile).astype(dtype)
             return tile
@@ -308,7 +309,8 @@ def pyramid_assemble_from_dict(
             num_threads = len(os.sched_getaffinity(0))
         else:
             num_threads = multiprocessing.cpu_count()
-        print(f"Using {num_threads} worker threads based on detected CPU count.")
+        print(
+            f"Using {num_threads} worker threads based on detected CPU count.")
         print()
     tifffile.TIFF.MAXWORKERS = num_threads
     tifffile.TIFF.MAXIOWORKERS = num_threads * 5
@@ -357,7 +359,7 @@ def pyramid_assemble_from_dict(
             img = zimg[:]
             for j in range(ch):
                 for i in range(cw):
-                    tile = img[ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+                    tile = img[ts * j: ts * (j + 1), ts * i: ts * (i + 1)]
                     yield tile
             del img
 
@@ -368,7 +370,7 @@ def pyramid_assemble_from_dict(
 
         def tile(coords):
             c, j, i = coords
-            tile = zimg[c, ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+            tile = zimg[c, ts * j: ts * (j + 1), ts * i: ts * (i + 1)]
             tile = skimage.transform.downscale_local_mean(tile, (2, 2))
             tile = np.round(tile).astype(dtype)
             return tile
@@ -543,7 +545,8 @@ def export_ometiff_pyramid_from_qptiff(
         markers_name = extract_channels_from_qptiff(path_qptiff)
     else:
         if not pathlib.Path(path_markerlist).exists():
-            raise FileNotFoundError(f"Marker list file not found: {path_markerlist}")
+            raise FileNotFoundError(
+                f"Marker list file not found: {path_markerlist}")
         else:
             markers_name = np.loadtxt(path_markerlist, dtype=str).tolist()
 
@@ -600,7 +603,8 @@ def extract_channels_from_qptiff(path_qptiff: str) -> list[str]:
     channels = []
     with tifffile.TiffFile(path_qptiff) as tif:
         for page in tif.series[0].pages:
-            channel = ElementTree.fromstring(page.description).find("Name").text
+            channel = ElementTree.fromstring(
+                page.description).find("Name").text
             channels.append(channel)
     return channels
 
@@ -718,13 +722,15 @@ def load_tiff_to_dict(
             )
 
     # Step 4: Load the image data
-    ## All channels are requested, no reordering needed
+    # All channels are requested, no reordering needed
     if set(channels_name) == set(channels_order):
         im = tifffile.imread(path_tiff)  # faster than using generator
-        im_dict = OrderedDict((channels_name[i], im[i]) for i in range(im.shape[0]))
+        im_dict = OrderedDict((channels_name[i], im[i])
+                              for i in range(im.shape[0]))
         if channels_name != channels_order:
-            im_dict = OrderedDict((name, im_dict[name]) for name in channels_order)
-    ## Only a subset of channels is requested
+            im_dict = OrderedDict((name, im_dict[name])
+                                  for name in channels_order)
+    # Only a subset of channels is requested
     else:
         index = [channels_name.index(channel) for channel in channels_order]
         im_generator = tiff_highest_resolution_generator(

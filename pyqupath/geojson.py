@@ -48,7 +48,8 @@ def load_geojson_to_gdf(
         geojson_data = json.loads(geojson_text)
         gdf = gpd.GeoDataFrame.from_features(geojson_data["features"])
     else:
-        raise ValueError("Either 'geojson_path' or 'geojson_text' must be provided.")
+        raise ValueError(
+            "Either 'geojson_path' or 'geojson_text' must be provided.")
     return gdf
 
 
@@ -187,12 +188,14 @@ def mask_to_geojson(
         for contour in contours:
             # Skip contours with insufficient points
             if len(contour) < 4:
-                print(f"Skipping contour with insufficient points: {label}, {contour}")
+                print(
+                    f"Skipping contour with insufficient points: {label}, {contour}")
                 continue
 
             if simplify_opencv_precision is not None:
                 # Simplify the contour using OpenCV's approxPolyDP
-                epsilon = simplify_opencv_precision * cv2.arcLength(contour, True)
+                epsilon = simplify_opencv_precision * \
+                    cv2.arcLength(contour, True)
                 approx = cv2.approxPolyDP(contour, epsilon, True)
                 polygon = Polygon(approx.squeeze(axis=1))
             else:
@@ -311,7 +314,8 @@ def binary_mask_to_polygon(
             # If the line is diagonal
             if curr_x != next_x and curr_y != next_y:
                 # Get all diagonal points
-                diagonal_points = _get_diagonal_points(curr_x, curr_y, next_x, next_y)
+                diagonal_points = _get_diagonal_points(
+                    curr_x, curr_y, next_x, next_y)
                 n_diagonal = len(diagonal_points)
 
                 # Add intermediate points if they are in the mask
@@ -345,7 +349,8 @@ def binary_mask_to_polygon(
             polygon = Polygon(contour.squeeze(axis=1))
     else:
         for contour in contours:
-            adjusted_contour = _adjust_to_axis(contour.squeeze(axis=1), geojson_loc)
+            adjusted_contour = _adjust_to_axis(
+                contour.squeeze(axis=1), geojson_loc)
             polygon = Polygon(adjusted_contour)
     return polygon
 
@@ -412,7 +417,7 @@ def mask_to_polygons(
     """
     # Split labels into batches
     labels_batches = [
-        labels[i : i + batch_size] for i in range(0, len(labels), batch_size)
+        labels[i: i + batch_size] for i in range(0, len(labels), batch_size)
     ]
 
     # Process batches in parallel
@@ -473,7 +478,8 @@ def mask_to_geojson_joblib(
     polygons = mask_to_polygons(mask, labels, n_jobs, batch_size, diagonal)
 
     # Assign bright colors to annotations
-    color_dict = assign_bright_colors(np.unique(list(annotation_dict.values())))
+    color_dict = assign_bright_colors(
+        np.unique(list(annotation_dict.values())))
     color_dict["Unknown"] = (128, 128, 128)  # Gray for unknown annotations
 
     # Create GeoJSON features
