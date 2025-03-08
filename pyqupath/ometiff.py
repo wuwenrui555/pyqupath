@@ -10,8 +10,8 @@ import pathlib
 import re
 import sys
 import uuid
-import xml.etree.ElementTree as ET
 from collections import OrderedDict
+from xml.etree import ElementTree
 
 import numpy as np
 import pandas as pd
@@ -19,6 +19,8 @@ import skimage.transform
 import tifffile
 import zarr
 from tqdm import tqdm
+
+from pyqupath import constants
 
 ###############################################################################
 # pyramidal OME-TIFF writer
@@ -111,15 +113,18 @@ def pyramid_assemble(args=None):
         else:
             args.num_threads = multiprocessing.cpu_count()
         print(
-            f"Using {args.num_threads} worker threads based on detected CPU" " count."
-        )
+            f"Using {args.num_threads} worker threads based on detected CPU count.")
         print()
     tifffile.TIFF.MAXWORKERS = args.num_threads
     tifffile.TIFF.MAXIOWORKERS = args.num_threads * 5
 
     in_imgs = []
-    print("Scanning input images")
-    for i, path in enumerate(in_paths, 1):
+    for i, path in tqdm(
+        enumerate(in_paths, 1),
+        total=len(in_paths),
+        desc="Loading images",
+        bar_format=constants.TQDM_FORMAT,
+    ):
         spath = str(path)
         if match := re.search(r",(\d+)$", spath):
             c = int(match.group(1))
@@ -157,8 +162,7 @@ def pyramid_assemble(args=None):
             else:
                 error(
                     path,
-                    f"Can't handle dtype '{dtype}' yet, please contact the"
-                    f" authors.",
+                    f"Can't handle dtype '{dtype}' yet, please contact the authors.",
                 )
         else:
             if shape != base_shape:
@@ -173,11 +177,7 @@ def pyramid_assemble(args=None):
                     f"Expected dtype '{dtype}' to match first input image,"
                     f" got '{img_in.dtype}' instead.",
                 )
-        print(f"    file {i}")
-        print(f"        path: {spath}")
-        print(f"        properties: shape={img_in.shape} dtype={img_in.dtype}")
         in_imgs.extend(imgs)
-    print()
 
     num_channels = len(in_imgs)
     num_levels = np.ceil(np.log2(max(base_shape) / args.tile_size)) + 1
@@ -192,25 +192,16 @@ def pyramid_assemble(args=None):
             f" match number of channels in final image ({num_channels}).",
         )
 
-    print("Pyramid level sizes:")
-    for i, shape in enumerate(shapes):
-        print(f"    level {i + 1}: {format_shape(shape)}", end="")
-        if i == 0:
-            print(" (original size)", end="")
-        print()
-    print()
-
     pool = concurrent.futures.ThreadPoolExecutor(args.num_threads)
 
     def tiles0():
         ts = args.tile_size
         ch, cw = cshapes[0]
         for c, zimg in enumerate(in_imgs, 1):
-            print(f"    channel {c}")
             img = zimg[:]
             for j in range(ch):
                 for i in range(cw):
-                    tile = img[ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+                    tile = img[ts * j: ts * (j + 1), ts * i: ts * (i + 1)]
                     yield tile
             del img
 
@@ -221,7 +212,7 @@ def pyramid_assemble(args=None):
 
         def tile(coords):
             c, j, i = coords
-            tile = zimg[c, ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+            tile = zimg[c, ts * j: ts * (j + 1), ts * i: ts * (i + 1)]
             tile = skimage.transform.downscale_local_mean(tile, (2, 2))
             tile = np.round(tile).astype(dtype)
             return tile
@@ -248,31 +239,35 @@ def pyramid_assemble(args=None):
                 "Channel": {"Name": args.channel_names},
             }
         )
-    print(f"Writing level 1: {format_shape(shapes[0])}")
     with tifffile.TiffWriter(args.out_path, ome=True, bigtiff=True) as writer:
-        writer.write(
-            data=tiles0(),
-            shape=(num_channels,) + tuple(shapes[0]),
-            subifds=num_levels - 1,
-            dtype=dtype,
-            tile=(args.tile_size, args.tile_size),
-            compression="adobe_deflate",
-            predictor=True,
-            metadata=metadata,
-        )
-        print()
-        for level, shape in enumerate(shapes[1:], 1):
-            print(f"Resizing image for level {level + 1}: {format_shape(shape)}")
-            writer.write(
-                data=tiles(level),
-                shape=(num_channels,) + tuple(shape),
-                subfiletype=1,
-                dtype=dtype,
-                tile=(args.tile_size, args.tile_size),
-                compression="adobe_deflate",
-                predictor=True,
-            )
-        print()
+        for level, shape in tqdm(
+            enumerate(shapes),
+            total=len(shapes),
+            desc="Writing images",
+            bar_format=constants.TQDM_FORMAT,
+        ):
+            if level == 0:
+                writer.write(
+                    data=tiles0(),
+                    shape=(num_channels,) + tuple(shapes[0]),
+                    subifds=num_levels - 1,
+                    dtype=dtype,
+                    tile=(args.tile_size, args.tile_size),
+                    compression="adobe_deflate",
+                    predictor=True,
+                    metadata=metadata,
+                )
+            else:
+                writer.write(
+                    data=tiles(level),
+                    shape=(num_channels,) + tuple(shape),
+                    subfiletype=1,
+                    dtype=dtype,
+                    tile=(args.tile_size, args.tile_size),
+                    compression="adobe_deflate",
+                    predictor=True,
+                )
+    print()
 
 
 def pyramid_assemble_from_dict(
@@ -315,7 +310,8 @@ def pyramid_assemble_from_dict(
             num_threads = len(os.sched_getaffinity(0))
         else:
             num_threads = multiprocessing.cpu_count()
-        print(f"Using {num_threads} worker threads based on detected CPU" " count.")
+        print(
+            f"Using {num_threads} worker threads based on detected CPU count.")
         print()
     tifffile.TIFF.MAXWORKERS = num_threads
     tifffile.TIFF.MAXIOWORKERS = num_threads * 5
@@ -355,25 +351,16 @@ def pyramid_assemble_from_dict(
             f" match number of channels in final image ({num_channels}).",
         )
 
-    print("Pyramid level sizes:")
-    for i, shape in enumerate(shapes):
-        print(f"    level {i + 1}: {format_shape(shape)}", end="")
-        if i == 0:
-            print(" (original size)", end="")
-        print()
-    print()
-
     pool = concurrent.futures.ThreadPoolExecutor(num_threads)
 
     def tiles0():
         ts = tile_size
         ch, cw = cshapes[0]
         for c, zimg in enumerate(in_imgs, 1):
-            print(f"    channel {c}")
             img = zimg[:]
             for j in range(ch):
                 for i in range(cw):
-                    tile = img[ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+                    tile = img[ts * j: ts * (j + 1), ts * i: ts * (i + 1)]
                     yield tile
             del img
 
@@ -384,7 +371,7 @@ def pyramid_assemble_from_dict(
 
         def tile(coords):
             c, j, i = coords
-            tile = zimg[c, ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
+            tile = zimg[c, ts * j: ts * (j + 1), ts * i: ts * (i + 1)]
             tile = skimage.transform.downscale_local_mean(tile, (2, 2))
             tile = np.round(tile).astype(dtype)
             return tile
@@ -411,31 +398,35 @@ def pyramid_assemble_from_dict(
                 "Channel": {"Name": channel_names},
             }
         )
-    print(f"Writing level 1: {format_shape(shapes[0])}")
     with tifffile.TiffWriter(out_path, ome=True, bigtiff=True) as writer:
-        writer.write(
-            data=tiles0(),
-            shape=(num_channels,) + tuple(shapes[0]),
-            subifds=num_levels - 1,
-            dtype=dtype,
-            tile=(tile_size, tile_size),
-            compression="adobe_deflate",
-            predictor=True,
-            metadata=metadata,
-        )
-        print()
-        for level, shape in enumerate(shapes[1:], 1):
-            print(f"Resizing image for level {level + 1}: {format_shape(shape)}")
-            writer.write(
-                data=tiles(level),
-                shape=(num_channels,) + tuple(shape),
-                subfiletype=1,
-                dtype=dtype,
-                tile=(tile_size, tile_size),
-                compression="adobe_deflate",
-                predictor=True,
-            )
-        print()
+        for level, shape in tqdm(
+            enumerate(shapes),
+            total=len(shapes),
+            desc="Writing images",
+            bar_format=constants.TQDM_FORMAT,
+        ):
+            if level == 0:
+                writer.write(
+                    data=tiles0(),
+                    shape=(num_channels,) + tuple(shapes[0]),
+                    subifds=num_levels - 1,
+                    dtype=dtype,
+                    tile=(tile_size, tile_size),
+                    compression="adobe_deflate",
+                    predictor=True,
+                    metadata=metadata,
+                )
+            else:
+                writer.write(
+                    data=tiles(level),
+                    shape=(num_channels,) + tuple(shape),
+                    subfiletype=1,
+                    dtype=dtype,
+                    tile=(tile_size, tile_size),
+                    compression="adobe_deflate",
+                    predictor=True,
+                )
+    print()
 
 
 def export_ometiff_pyramid(
@@ -457,14 +448,15 @@ def export_ometiff_pyramid(
     ----------
     paths_tiff : list of str
         A list of file paths to the input TIFF images. Each file corresponds
-        to a specific channel in the final OME-TIFF.
+        to a specific channel in the final OME-TIFF. The order of the files
+        in the list determines the order of the channels in the OME-TIFF file.
     path_ometiff : str
         Path to the output OME-TIFF file. If the file already exists, the process
         will terminate to prevent overwriting.
     channel_names : list of str
         Names of the channels in the OME-TIFF file. Each name corresponds to a
-        channel in the `im_dict`. Default is None, meaning the channel names will
-        be the keys of the `im_dict`.
+        TIFF file in `paths_tiff`. The length of this list must match the number
+        of files in `paths_tiff`.
     tile_size : int, optional, default=256
         The width and height of tiles in the pyramidal TIFF. Smaller tile sizes
         can improve performance in certain scenarios.
@@ -504,9 +496,10 @@ def export_ometiff_pyramid_from_dict(
         Path to the output OME-TIFF file. If the file already exists, the process
         will terminate to prevent overwriting.
     channel_names : list of str
-        Names of the channels in the OME-TIFF file. Each name corresponds to a TIFF
-        file in `input_tiff_paths`. The length of this list must match the number
-        of files in `input_tiff_paths`.
+        Names of the channels in the OME-TIFF file. Each name corresponds to a
+        channel in the `im_dict`. The order of the `channel_names` determines
+        the order of the channels in the OME-TIFF file. Default is None, meaning
+        the `channel_names` will be the keys of the `im_dict`.
     tile_size : int, optional, default=256
         The width and height of tiles in the pyramidal TIFF. Smaller tile sizes
         can improve performance in certain scenarios.
@@ -553,9 +546,10 @@ def export_ometiff_pyramid_from_qptiff(
         markers_name = extract_channels_from_qptiff(path_qptiff)
     else:
         if not pathlib.Path(path_markerlist).exists():
-            raise FileNotFoundError(f"Marker list file not found: {path_markerlist}")
-        with open(path_markerlist, "r") as f:
-            markers_name = f.read().splitlines()
+            raise FileNotFoundError(
+                f"Marker list file not found: {path_markerlist}")
+        else:
+            markers_name = np.loadtxt(path_markerlist, dtype=str).tolist()
 
     # Read QPTIFF file and organize data
     im = tifffile.imread(path_qptiff)
@@ -567,60 +561,8 @@ def export_ometiff_pyramid_from_qptiff(
 
 
 ###############################################################################
-# metadata extraction
+# channel extraction
 ###############################################################################
-
-
-def parse_xml_string_ometiff(xml_string):
-    """
-    Parse an XML string from an OME-TIFF file to extract metadata.
-
-    Parameters
-    ----------
-    xml_string : str
-        The XML string containing the OME-TIFF metadata.
-
-    Returns
-    -------
-    pd.DataFrame
-        A DataFrame containing channel metadata.
-    """
-    root = ET.fromstring(xml_string)
-    channels = root.findall(".//{*}Channel")
-    metadata = pd.DataFrame([channel.attrib for channel in channels])
-    return metadata
-
-
-def parse_xml_string_qptiff(xml_string):
-    """
-    Parse an XML string from a QPTIFF file to extract metadata.
-
-    Parameters
-    ----------
-    xml_string : str
-        The XML string containing the QPTIFF metadata.
-
-    Returns
-    -------
-    pd.DataFrame
-        A DataFrame containing metadata.
-    """
-    root = ET.fromstring(xml_string)
-
-    scan_profile = root.find(".//ScanProfile")
-    if scan_profile is None:
-        raise ValueError("ScanProfile element not found in the provided XML string.")
-
-    scan_profile_data = json.loads(scan_profile.text)
-    wells = scan_profile_data.get("experimentDescription").get("wells")
-    metadata = pd.concat(
-        [
-            pd.DataFrame(well.get("items")).assign(wellName=well.get("wellName"))
-            for well in wells
-        ],
-        ignore_index=True,
-    )
-    return metadata
 
 
 def extract_channels_from_ometiff(path_ometiff: str) -> list[str]:
@@ -637,16 +579,17 @@ def extract_channels_from_ometiff(path_ometiff: str) -> list[str]:
     list of str
         A list of channel names.
     """
-    with tifffile.TiffFile(path_ometiff) as im:
-        xml_string = im.ome_metadata
-    metadata = parse_xml_string_ometiff(xml_string)
-    channels = metadata["Name"].tolist()
+    with tifffile.TiffFile(path_ometiff) as tif:
+        ome_metadata = ElementTree.fromstring(tif.ome_metadata)
+        ome_channels = ome_metadata.findall(".//{*}Channel")
+        metadata = pd.DataFrame([channel.attrib for channel in ome_channels])
+        channels = metadata["Name"].tolist()
     return channels
 
 
 def extract_channels_from_qptiff(path_qptiff: str) -> list[str]:
     """
-    Extract channel names from a QPTIFF file.
+    Extract channel names from a final (er) QPTIFF file.
 
     Parameters
     ----------
@@ -659,16 +602,57 @@ def extract_channels_from_qptiff(path_qptiff: str) -> list[str]:
         A list of channel names.
     """
     with tifffile.TiffFile(path_qptiff) as im:
-        series = im.series[0]
-        xml_string = series.pages[0].tags["ImageDescription"].value
-        metadata = parse_xml_string_qptiff(xml_string)
+        xml_string = im.series[0].pages[0].tags["ImageDescription"].value
+        scan_profile = ElementTree.fromstring(
+            xml_string).find(".//ScanProfile")
+        if scan_profile is None:
+            raise ValueError(
+                "ScanProfile element not found in the provided XML string."
+            )
+
+        scan_profile_data = json.loads(scan_profile.text)
+        wells = scan_profile_data.get("experimentDescription").get("wells")
+        qptiff_metadata = pd.concat(
+            [
+                pd.DataFrame(well.get("items")).assign(
+                    wellName=well.get("wellName"))
+                for well in wells
+            ],
+            ignore_index=True,
+        )
+        is_marker = (qptiff_metadata["markerName"] != "--") & (
+            qptiff_metadata["id"].apply(
+                lambda x: re.search(r"^0+(-0+)+$", x.strip()) is None
+            )
+        )
         channels = (
-            metadata.loc[
-                (metadata["markerName"] != "--") & (metadata["panel"] != "Inventoried")
-            ]
+            qptiff_metadata.loc[is_marker]
             .drop_duplicates(["id", "markerName"])["markerName"]
             .tolist()
         )
+    return channels
+
+
+def extract_channels_from_qptiff_raw(path_qptiff: str) -> list[str]:
+    """
+    Extract channel names from a raw QPTIFF file.
+
+    Parameters
+    ----------
+    path_ometiff : str
+        Path to the OME-TIFF file.
+
+    Returns
+    -------
+    list of str
+        A list of channel names.
+    """
+    channels = []
+    with tifffile.TiffFile(path_qptiff) as tif:
+        for page in tif.series[0].pages:
+            channel = ElementTree.fromstring(
+                page.description).find("Name").text
+            channels.append(channel)
     return channels
 
 
@@ -762,7 +746,9 @@ def load_tiff_to_dict(
         else:
             raise ValueError("Filetype must be either 'qptiff' or 'ome.tiff'")
     else:
-        channels_name = np.loadtxt(path_markerlist, dtype=str).tolist()
+        with open(path_markerlist) as f:
+            channels_name = f.readlines()
+            channels_name = [x.strip() for x in channels_name]
 
     # Default to loading in original order if `channels_order` is not specified
     if channels_order is None:
@@ -783,23 +769,28 @@ def load_tiff_to_dict(
             )
 
     # Step 4: Load the image data
-    ## All channels are requested, no reordering needed
+    # All channels are requested, no reordering needed
     if set(channels_name) == set(channels_order):
         im = tifffile.imread(path_tiff)  # faster than using generator
-        im_dict = OrderedDict((channels_name[i], im[i]) for i in range(im.shape[0]))
+        im_dict = OrderedDict((channels_name[i], im[i])
+                              for i in range(im.shape[0]))
         if channels_name != channels_order:
-            im_dict = OrderedDict((name, im_dict[name]) for name in channels_order)
-    ## Only a subset of channels is requested
+            im_dict = OrderedDict((name, im_dict[name])
+                                  for name in channels_order)
+    # Only a subset of channels is requested
     else:
         index = [channels_name.index(channel) for channel in channels_order]
         im_generator = tiff_highest_resolution_generator(
             path_tiff, asarray=True, index=index
         )
-        names = channels_name if channels_rename is None else channels_rename
+        names = channels_order if channels_rename is None else channels_rename
         im_dict = OrderedDict(
             (names[i], im)
             for i, im in tqdm(
-                enumerate(im_generator), total=len(index), desc="Loading images"
+                enumerate(im_generator),
+                total=len(index),
+                desc="Loading images",
+                bar_format=constants.TQDM_FORMAT,
             )
         )
 

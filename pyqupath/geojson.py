@@ -1,13 +1,17 @@
 import json
+from collections import OrderedDict
+from typing import Generator
 
 import cv2
 import geopandas as gpd
 import numpy as np
+from joblib import delayed
 from rasterio.features import rasterize
-from joblib import Parallel, delayed
-from shapely.geometry import Polygon, mapping
+from shapely.geometry import MultiPolygon, Polygon, mapping
 from tqdm import tqdm
-from tqdm_joblib import tqdm_joblib
+from tqdm_joblib import ParallelPbar
+
+from pyqupath import constants
 
 ################################################################################
 # IO
@@ -44,7 +48,8 @@ def load_geojson_to_gdf(
         geojson_data = json.loads(geojson_text)
         gdf = gpd.GeoDataFrame.from_features(geojson_data["features"])
     else:
-        raise ValueError("Either 'geojson_path' or 'geojson_text' must be provided.")
+        raise ValueError(
+            "Either 'geojson_path' or 'geojson_text' must be provided.")
     return gdf
 
 
@@ -167,7 +172,7 @@ def mask_to_geojson(
     color_map = assign_bright_colors(np.unique(list(annotation_dict.values())))
     color_map["Unknown"] = (128, 128, 128)  # Gray for unknown annotations
 
-    for label in tqdm(labels):
+    for label in tqdm(labels, bar_format=constants.TQDM_FORMAT):
         if label == 0:  # Skip background
             continue
 
@@ -181,9 +186,16 @@ def mask_to_geojson(
         )
 
         for contour in contours:
+            # Skip contours with insufficient points
+            if len(contour) < 4:
+                print(
+                    f"Skipping contour with insufficient points: {label}, {contour}")
+                continue
+
             if simplify_opencv_precision is not None:
                 # Simplify the contour using OpenCV's approxPolyDP
-                epsilon = simplify_opencv_precision * cv2.arcLength(contour, True)
+                epsilon = simplify_opencv_precision * \
+                    cv2.arcLength(contour, True)
                 approx = cv2.approxPolyDP(contour, epsilon, True)
                 polygon = Polygon(approx.squeeze(axis=1))
             else:
@@ -202,7 +214,7 @@ def mask_to_geojson(
                             "objectType": "annotation",
                             "name": str(label),
                             "classification": {
-                                "name": annotation_dict.get(label, "Unkonwn"),
+                                "name": annotation_dict.get(label, "Unknown"),
                                 "color": color,
                             },
                         },
@@ -217,7 +229,10 @@ def mask_to_geojson(
     print(f"GeoJSON saved to {geojson_path}")
 
 
-def binary_mask_to_polygon(binary_mask: np.ndarray) -> Polygon:
+def binary_mask_to_polygon(
+    binary_mask: np.ndarray,
+    diagonal: bool = False,
+) -> Polygon:
     """
     Convert a binary mask to a Shapely Polygon.
 
@@ -225,23 +240,125 @@ def binary_mask_to_polygon(binary_mask: np.ndarray) -> Polygon:
     ----------
     binary_mask : np.ndarray
         A 2D binary mask with values 0 or 1.
+    diagonal : bool, optional
+        Whether to allow diagonal lines in the polygon. Default if False.  If
+        False, adjusts the contour to be either vertical or horizontal.
 
     Returns
     -------
     Polygon
         A Shapely Polygon representing the external contour of the binary mask.
     """
+
+    def _get_diagonal_points(curr_x, curr_y, next_x, next_y):
+        """
+        Get all diagonal points between two diagonal points.
+
+        Parameters
+        ----------
+        curr_x : int
+            X-coordinate of current point.
+        curr_y : int
+            Y-coordinate of current point.
+        next_x : int
+            X-coordinate of next point.
+        next_y : int
+            Y-coordinate of next point.
+
+        Returns
+        -------
+        list
+            A list of diagonal points between the current and next points.
+        """
+        points = []
+        dx = 1 if next_x > curr_x else -1
+        dy = 1 if next_y > curr_y else -1
+
+        x, y = curr_x, curr_y
+        while x != next_x or y != next_y:
+            points.append((x, y))
+            x += dx
+            y += dy
+        points.append((next_x, next_y))
+        return points
+
+    def _adjust_to_axis(contour, geojson_loc):
+        """
+        Adjusts a contour to be either vertical or horizontal.
+
+        Parameters
+        ----------
+        contour : np.ndarray
+            Contour points as a numpy array of shape (N, 2).
+        geojson_loc : np.ndarray
+            Location of the mask in geojson format.
+
+        Returns
+        -------
+        list
+            Adjusted contour points with only vertical or horizontal lines.
+        """
+        adjusted_contour = []
+        n = len(contour)
+
+        for i in range(n):
+            # Current and next point
+            curr_point = contour[i]
+            curr_x, curr_y = curr_point
+            next_point = contour[(i + 1) % n]  # Wrap around for closed contour
+            next_x, next_y = next_point
+
+            # Add the current point
+            adjusted_contour.append(curr_point)
+
+            # If the line is diagonal
+            if curr_x != next_x and curr_y != next_y:
+                # Get all diagonal points
+                diagonal_points = _get_diagonal_points(
+                    curr_x, curr_y, next_x, next_y)
+                n_diagonal = len(diagonal_points)
+
+                # Add intermediate points if they are in the mask
+                for j in range(n_diagonal - 1):
+                    curr_x, curr_y = diagonal_points[j]
+                    next_x, next_y = diagonal_points[j + 1]
+                    if geojson_loc[curr_y, next_x] != 0:
+                        intermediate_point = [next_x, curr_y]
+                        adjusted_contour.append(intermediate_point)
+                    elif geojson_loc[next_y, curr_x] != 0:
+                        intermediate_point = [curr_x, next_y]
+                        adjusted_contour.append(intermediate_point)
+                    adjusted_contour.append([next_x, next_y])
+
+        return np.array(adjusted_contour)
+
+    # location of the mask in geojson format
+    shape_0 = binary_mask.shape[0]
+    shape_1 = binary_mask.shape[1]
+    geojson_loc = np.zeros((shape_0 + 1, shape_1 + 1), dtype=np.uint8)
+    geojson_loc[:shape_0, :shape_1] += binary_mask
+    geojson_loc[:shape_0, 1:] += binary_mask
+    geojson_loc[1:, :shape_1] += binary_mask
+    geojson_loc[1:, 1:] += binary_mask
+
     contours, _ = cv2.findContours(
-        binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        geojson_loc, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
-    for contour in contours:
-        polygon = Polygon(contour.squeeze(axis=1))
+    if diagonal:
+        for contour in contours:
+            polygon = Polygon(contour.squeeze(axis=1))
+    else:
+        for contour in contours:
+            adjusted_contour = _adjust_to_axis(
+                contour.squeeze(axis=1), geojson_loc)
+            polygon = Polygon(adjusted_contour)
     return polygon
 
 
 def mask_to_polygon_batch(
     mask: np.ndarray,
     labels_batch: list[int],
+    diagonal: bool = False,
 ) -> list[Polygon]:
     """
     Convert a batch of labels from a mask into Polygons.
@@ -252,6 +369,9 @@ def mask_to_polygon_batch(
         A 2D segmentation mask.
     labels_batch : list or np.ndarray
         A batch of unique label values from the mask.
+    diagonal : bool, optional
+        Whether to allow diagonal lines in the polygon. Default if False. If
+        False, adjusts the contour to be either vertical or horizontal.
 
     Returns
     -------
@@ -259,7 +379,7 @@ def mask_to_polygon_batch(
         A list of Shapely Polygons corresponding to the given labels.
     """
     return [
-        binary_mask_to_polygon((mask == label).astype(np.uint8))
+        binary_mask_to_polygon((mask == label).astype(np.uint8), diagonal)
         for label in labels_batch
     ]
 
@@ -267,7 +387,9 @@ def mask_to_polygon_batch(
 def mask_to_polygons(
     mask: np.ndarray,
     labels: list[int],
+    n_jobs: int = 10,
     batch_size: int = 10,
+    diagonal: bool = False,
 ) -> list[Polygon]:
     """
     Convert a segmentation mask into a list of Polygons by processing labels in batches.
@@ -277,9 +399,16 @@ def mask_to_polygons(
     mask : np.ndarray
         A 2D segmentation mask.
     labels : list or np.ndarray
-        A list of unique label values from the mask, excluding the background (e.g., 0).
+        A list of unique label values from the mask, excluding the background
+        (e.g., 0).
+    n_jobs : int, optional
+        The number of parallel workers (CPU cores or threads) are spawned to
+        process the tasks. Default is 10.
     batch_size : int, optional
         The number of labels to process in each batch (default is 10).
+    diagonal : bool, optional
+        Whether to allow diagonal lines in the polygon. Default if False. If
+        False, adjusts the contour to be either vertical or horizontal.
 
     Returns
     -------
@@ -288,15 +417,17 @@ def mask_to_polygons(
     """
     # Split labels into batches
     labels_batches = [
-        labels[i : i + batch_size] for i in range(0, len(labels), batch_size)
+        labels[i: i + batch_size] for i in range(0, len(labels), batch_size)
     ]
 
     # Process batches in parallel
-    with tqdm_joblib(tqdm(desc="Processing", total=len(labels_batches), unit="batch")):
-        polygons_batches = Parallel(n_jobs=-1)(
-            delayed(mask_to_polygon_batch)(mask, labels_batch)
-            for labels_batch in labels_batches
-        )
+    polygons_batches = ParallelPbar(
+        desc="Mask to polygons",
+        bar_format=constants.TQDM_FORMAT,
+    )(n_jobs=n_jobs)(
+        delayed(mask_to_polygon_batch)(mask, labels_batch, diagonal)
+        for labels_batch in labels_batches
+    )
 
     # Flatten the list of batches into a single list
     polygons = [
@@ -309,6 +440,9 @@ def mask_to_geojson_joblib(
     mask: np.ndarray,
     geojson_path: str,
     annotation_dict: dict[int, str] = {},
+    n_jobs: int = 10,
+    batch_size: int = 10,
+    diagonal: bool = False,
 ):
     """
     Convert a labeled mask into a GeoJSON file using parallel processing.
@@ -320,8 +454,17 @@ def mask_to_geojson_joblib(
     geojson_path : str
         The file path to save the resulting GeoJSON file.
     annotation_dict : dict[int, str], optional
-        A dictionary mapping integer label values in the mask to their annotation names.
-        Labels not in this dictionary will be classified as "Unknown". Default is an empty dictionary.
+        A dictionary mapping integer label values in the mask to their
+        annotation names. Labels not in this dictionary will be classified as
+        "Unknown". Default is an empty dictionary.
+    n_jobs : int, optional
+        The number of parallel workers (CPU cores or threads) are spawned to
+        process the tasks. Default is 10.
+    batch_size : int, optional
+        The number of labels to process in each batch (default is 10).
+    diagonal : bool, optional
+        Whether to allow diagonal lines in the polygon. Default if False. If
+        False, adjusts the contour to be either vertical or horizontal.
 
     Returns
     -------
@@ -332,10 +475,11 @@ def mask_to_geojson_joblib(
     labels = labels[labels != 0]
 
     # Convert mask to polygons
-    polygons = mask_to_polygons(mask, labels)
+    polygons = mask_to_polygons(mask, labels, n_jobs, batch_size, diagonal)
 
     # Assign bright colors to annotations
-    color_dict = assign_bright_colors(np.unique(list(annotation_dict.values())))
+    color_dict = assign_bright_colors(
+        np.unique(list(annotation_dict.values())))
     color_dict["Unknown"] = (128, 128, 128)  # Gray for unknown annotations
 
     # Create GeoJSON features
@@ -359,3 +503,118 @@ def mask_to_geojson_joblib(
     geojson = {"type": "FeatureCollection", "features": features}
     with open(geojson_path, "w") as f:
         json.dump(geojson, f)
+
+
+################################################################################
+# Crop images by GeoJSON
+################################################################################
+
+
+def crop_dict_by_geojson(
+    im_dict: OrderedDict[str, np.ndarray],
+    path_geojson: str,
+    fill: float = 0,
+    multipolygon_rate: float = 100,
+    desc_region: str = "Cropping regions",
+    desc_channel: str = ">>Cropping channels",
+) -> Generator[tuple[str, OrderedDict[str, np.ndarray]], None, None]:
+    """
+    Crop regions from images in a dictionary using polygons from a GeoJSON file.
+
+    This function takes an ordered dictionary of images and a GeoJSON file path.
+    For each polygon in the GeoJSON, it crops the region specified by the polygon
+    and applies a mask to keep only the pixels inside the polygon, while filling
+    the outside region with a specified value.
+
+    If the geometry in the GeoJSON is a MultiPolygon, the function will attempt
+    to determine the main Polygon within the MultiPolygon by comparing the areas
+    of the polygons. If the area of the largest polygon is significantly larger
+    than the second largest polygon (determined by the `multipolygon_rate`), the
+    largest polygon will be used. Otherwise, the region will be skipped.
+
+    Parameters
+    ----------
+    im_dict : OrderedDict[str, np.ndarray]
+        A dictionary where keys are channel names and values are 2D NumPy arrays
+        representing image channels.
+    path_geojson : str
+        Path to the GeoJSON file containing the polygons for cropping.
+    fill : float, optional
+        Value to fill in the masked areas outside the polygon. Default is 0.
+    multipolygon_rate : float, optional
+        The ratio of the area of the largest polygon to the second largest polygon
+        within a MultiPolygon. If the ratio is greater than this value, the largest
+        polygon will be used. Default is 100.
+    desc_region : str, optional
+        Description for the cropping progress bar.
+        Default is "Cropping regions".
+    desc_channel : str, optional
+        Description for the channel cropping progress bar.
+        Default is "    Cropping channels".
+
+    Yields
+    ------
+    Tuple[str, OrderedDict[str, np.ndarray]]
+        A tuple where the first element is the name of the region (from the
+        GeoJSON), and the second element is an ordered dictionary containing the
+        cropped and masked regions for each image channel.
+    """
+    # Get the shape of the images (assume all images have the same shape)
+    im_shape = next(iter(im_dict.values())).shape
+
+    # Load the GeoJSON file
+    gdf = load_geojson_to_gdf(path_geojson)
+
+    for _, row in tqdm(
+        gdf.iterrows(),
+        total=len(gdf),
+        desc=desc_region,
+        bar_format=constants.TQDM_FORMAT,
+    ):
+        geometry, name = row[["geometry", "name"]]
+
+        # Skip non-polygon geometries
+        if not isinstance(geometry, Polygon):
+            if isinstance(geometry, MultiPolygon):
+                polygons = [
+                    polygon
+                    for polygon in geometry.geoms
+                    if isinstance(polygon, Polygon)
+                ]
+                areas = [polygon.area for polygon in polygons]
+                sorted_areas = sorted(areas, reverse=True)
+
+                largest_area = sorted_areas[0]
+                second_largest = sorted_areas[1]
+                if largest_area > second_largest * multipolygon_rate:
+                    geometry = polygons[areas.index(largest_area)]
+                else:
+                    print(
+                        f"Skipping {name}: cannot determine the main Polygon within the MultiPolygon"
+                    )
+                    continue
+            else:
+                print(f"Skipping {name}: not a Polygon or Multipolygon")
+                continue
+
+        # Step 1: Get bounds from the polygon
+        bounds = geometry.bounds  # (min_x, min_y, max_x, max_y)
+        min_x, min_y, max_x, max_y = map(int, bounds)
+
+        # Step 2: Create a mask for the polygon and apply it during cropping
+        mask = polygon_to_mask(geometry, im_shape)
+        cropped_mask = mask[min_y:max_y, min_x:max_x]
+
+        # Step 3: Crop and apply the mask to each image channel
+        masked_cropped_im_dict = OrderedDict()
+        for channel_name, im in tqdm(
+            im_dict.items(),
+            total=len(im_dict),
+            desc=desc_channel,
+            bar_format=constants.TQDM_FORMAT,
+        ):
+            cropped_im = im[min_y:max_y, min_x:max_x]
+            masked_cropped_im = np.where(cropped_mask, cropped_im, fill)
+            masked_cropped_im_dict[channel_name] = masked_cropped_im
+
+        yield name, masked_cropped_im_dict

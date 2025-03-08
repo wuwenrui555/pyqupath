@@ -6,6 +6,7 @@
 - `polygon_to_mask()`: Generate a binary mask from a polygon.
 - `mask_to_geojson()`: Convert a labeled mask into a GeoJSON file.
 - `mask_to_geojson_joblib()`: Convert a labeled mask into a GeoJSON file using parallel processing.
+- `crop_dict_by_geojson()`: Crop regions from images in a dictionary using polygons from a GeoJSON file.
 
 
 
