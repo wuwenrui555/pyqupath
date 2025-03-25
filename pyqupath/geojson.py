@@ -1,6 +1,7 @@
 import json
 from collections import OrderedDict
-from typing import Generator
+from pathlib import Path
+from typing import Generator, Optional, Union
 
 import cv2
 import geopandas as gpd
@@ -12,6 +13,7 @@ from tqdm import tqdm
 from tqdm_joblib import ParallelPbar
 
 from pyqupath import constants
+from pyqupath.color import generate_distinct_colors
 
 ################################################################################
 # IO
@@ -22,14 +24,13 @@ def load_geojson_to_gdf(
     geojson_path: str = None,
     geojson_text: str = None,
 ) -> gpd.GeoDataFrame:
-    """
-    Load a GeoJSON file or string as GeoPandas GeoDataFrame.
+    """Load a GeoJSON file or string as GeoPandas GeoDataFrame.
 
     Parameters
     ----------
     geojson_path : str, optional
-        The file path to the GeoJSON file. If provided, the file will be read and parsed.
-        This parameter is mutually exclusive with `geojson_text`.
+        The file path to the GeoJSON file. If provided, the file will be read
+        and parsed. This parameter is mutually exclusive with `geojson_text`.
     geojson_text : str, optional
         The GeoJSON string. If provided, the string will be parsed.
         This parameter is mutually exclusive with `geojson_path`.
@@ -37,19 +38,18 @@ def load_geojson_to_gdf(
     Returns
     -------
     geopandas.GeoDataFrame
-        A GeoPandas GeoDataFrame containing the geometries and properties from the GeoJSON.
+        A GeoPandas GeoDataFrame containing the geometries and properties from
+        the GeoJSON.
     """
     if geojson_path is not None:
         with open(geojson_path, "r") as f:
             geojson_data = json.load(f)
-        # Convert GeoJSON to GeoDataFrame
         gdf = gpd.GeoDataFrame.from_features(geojson_data["features"])
     elif geojson_text is not None:
         geojson_data = json.loads(geojson_text)
         gdf = gpd.GeoDataFrame.from_features(geojson_data["features"])
     else:
-        raise ValueError(
-            "Either 'geojson_path' or 'geojson_text' must be provided.")
+        raise ValueError("Either 'geojson_path' or 'geojson_text' must be provided.")
     return gdf
 
 
@@ -62,8 +62,7 @@ def polygon_to_mask(
     polygon: Polygon,
     shape: tuple[int, int],
 ) -> np.ndarray:
-    """
-    Generate a binary mask from a polygon.
+    """Generate a binary mask from a polygon.
 
     Parameters
     ----------
@@ -76,17 +75,17 @@ def polygon_to_mask(
     -------
     np.ndarray
         A binary mask with the same dimensions as the specified shape,
-        where pixels inside the polygon are 1 and outside are 0.
+        where pixels inside the polygon are True and outside are False.
     """
     height, width = shape
 
     # Rasterize the polygon
     mask = rasterize(
-        [(polygon, 1)],  # Each tuple contains a geometry and the value to burn
+        [(polygon, True)],  # Each tuple contains a geometry and the value to burn
         out_shape=(height, width),
-        fill=0,  # Value for pixels outside the polygon
+        fill=False,  # Value for pixels outside the polygon
         dtype=np.uint8,
-    )
+    ).astype(bool)
     return mask
 
 
@@ -153,10 +152,12 @@ def mask_to_geojson(
     geojson_path : str
         Path to save the output GeoJSON file.
     annotation_dict : dict[int, str]
-        A dictionary mapping label integers to their corresponding annotation names.
+        A dictionary mapping label integers to their corresponding annotation
+        names.
     simplify_opencv_precision : float, optional
-        Precision value for OpenCV's approxPolyDP. Smaller values retain more detail.
-        Default is None, meaning no OpenCV simplification is applied. (Recommended: 0.01)
+        Precision value for OpenCV's approxPolyDP. Smaller values retain more
+        detail. Default is None, meaning no OpenCV simplification is applied.
+        (Recommended: 0.01)
     simplify_shapely_tolerance : float, optional
         Tolerance for simplifying polygons using Shapely. Smaller values retain
         more detail. Default is None, meaning no simplification is applied.
@@ -188,14 +189,12 @@ def mask_to_geojson(
         for contour in contours:
             # Skip contours with insufficient points
             if len(contour) < 4:
-                print(
-                    f"Skipping contour with insufficient points: {label}, {contour}")
+                print(f"Skipping contour with insufficient points: {label}, {contour}")
                 continue
 
             if simplify_opencv_precision is not None:
                 # Simplify the contour using OpenCV's approxPolyDP
-                epsilon = simplify_opencv_precision * \
-                    cv2.arcLength(contour, True)
+                epsilon = simplify_opencv_precision * cv2.arcLength(contour, True)
                 approx = cv2.approxPolyDP(contour, epsilon, True)
                 polygon = Polygon(approx.squeeze(axis=1))
             else:
@@ -314,8 +313,7 @@ def binary_mask_to_polygon(
             # If the line is diagonal
             if curr_x != next_x and curr_y != next_y:
                 # Get all diagonal points
-                diagonal_points = _get_diagonal_points(
-                    curr_x, curr_y, next_x, next_y)
+                diagonal_points = _get_diagonal_points(curr_x, curr_y, next_x, next_y)
                 n_diagonal = len(diagonal_points)
 
                 # Add intermediate points if they are in the mask
@@ -349,8 +347,7 @@ def binary_mask_to_polygon(
             polygon = Polygon(contour.squeeze(axis=1))
     else:
         for contour in contours:
-            adjusted_contour = _adjust_to_axis(
-                contour.squeeze(axis=1), geojson_loc)
+            adjusted_contour = _adjust_to_axis(contour.squeeze(axis=1), geojson_loc)
             polygon = Polygon(adjusted_contour)
     return polygon
 
@@ -392,7 +389,8 @@ def mask_to_polygons(
     diagonal: bool = False,
 ) -> list[Polygon]:
     """
-    Convert a segmentation mask into a list of Polygons by processing labels in batches.
+    Convert a segmentation mask into a list of Polygons by processing labels in
+    batches.
 
     Parameters
     ----------
@@ -417,7 +415,7 @@ def mask_to_polygons(
     """
     # Split labels into batches
     labels_batches = [
-        labels[i: i + batch_size] for i in range(0, len(labels), batch_size)
+        labels[i : i + batch_size] for i in range(0, len(labels), batch_size)
     ]
 
     # Process batches in parallel
@@ -478,8 +476,7 @@ def mask_to_geojson_joblib(
     polygons = mask_to_polygons(mask, labels, n_jobs, batch_size, diagonal)
 
     # Assign bright colors to annotations
-    color_dict = assign_bright_colors(
-        np.unique(list(annotation_dict.values())))
+    color_dict = assign_bright_colors(np.unique(list(annotation_dict.values())))
     color_dict["Unknown"] = (128, 128, 128)  # Gray for unknown annotations
 
     # Create GeoJSON features
@@ -515,8 +512,7 @@ def crop_dict_by_geojson(
     path_geojson: str,
     fill: float = 0,
     multipolygon_rate: float = 100,
-    desc_region: str = "Cropping regions",
-    desc_channel: str = ">>Cropping channels",
+    desc: str = "Cropping",
 ) -> Generator[tuple[str, OrderedDict[str, np.ndarray]], None, None]:
     """
     Crop regions from images in a dictionary using polygons from a GeoJSON file.
@@ -545,76 +541,158 @@ def crop_dict_by_geojson(
         The ratio of the area of the largest polygon to the second largest polygon
         within a MultiPolygon. If the ratio is greater than this value, the largest
         polygon will be used. Default is 100.
-    desc_region : str, optional
-        Description for the cropping progress bar.
-        Default is "Cropping regions".
-    desc_channel : str, optional
-        Description for the channel cropping progress bar.
-        Default is "    Cropping channels".
+    desc : str, optional
+        Description for the progress bar. Default is "Cropping".
 
     Yields
     ------
-    Tuple[str, OrderedDict[str, np.ndarray]]
-        A tuple where the first element is the name of the region (from the
-        GeoJSON), and the second element is an ordered dictionary containing the
-        cropped and masked regions for each image channel.
+    tuple[str, OrderedDict[str, np.ndarray]]
+        A tuple containing:
+        - The name of the region from the GeoJSON
+        - An ordered dictionary with the cropped and masked regions for each channel
     """
-    # Get the shape of the images (assume all images have the same shape)
+    # Get the shape of the first image (all images should have same shape)
     im_shape = next(iter(im_dict.values())).shape
 
-    # Load the GeoJSON file
+    # Load GeoJSON into GeoDataFrame
     gdf = load_geojson_to_gdf(path_geojson)
 
-    for _, row in tqdm(
-        gdf.iterrows(),
-        total=len(gdf),
-        desc=desc_region,
+    # Setup progress bar
+    n_regions = len(gdf)
+    n_channels = len(im_dict)
+    pb = tqdm(
+        total=n_regions * n_channels,
+        desc=desc,
         bar_format=constants.TQDM_FORMAT,
-    ):
+    )
+
+    for _, row in gdf.iterrows():
         geometry, name = row[["geometry", "name"]]
 
-        # Skip non-polygon geometries
-        if not isinstance(geometry, Polygon):
-            if isinstance(geometry, MultiPolygon):
-                polygons = [
-                    polygon
-                    for polygon in geometry.geoms
-                    if isinstance(polygon, Polygon)
-                ]
-                areas = [polygon.area for polygon in polygons]
-                sorted_areas = sorted(areas, reverse=True)
+        # Handle different geometry types
+        if isinstance(geometry, Polygon):
+            polygon = geometry
+        elif isinstance(geometry, MultiPolygon):
+            # Try to extract main polygon from MultiPolygon
+            polygons = [p for p in geometry.geoms if isinstance(p, Polygon)]
+            if not polygons:
+                print(f"Skipping {name}: MultiPolygon contains no valid Polygons")
+                continue
 
+            areas = [p.area for p in polygons]
+            sorted_areas = sorted(areas, reverse=True)
+
+            if len(sorted_areas) == 1:
+                polygon = polygons[0]
+            else:
                 largest_area = sorted_areas[0]
                 second_largest = sorted_areas[1]
                 if largest_area > second_largest * multipolygon_rate:
-                    geometry = polygons[areas.index(largest_area)]
+                    polygon = polygons[areas.index(largest_area)]
                 else:
                     print(
-                        f"Skipping {name}: cannot determine the main Polygon within the MultiPolygon"
+                        f"Skipping {name}: cannot determine main Polygon in MultiPolygon"
                     )
                     continue
-            else:
-                print(f"Skipping {name}: not a Polygon or Multipolygon")
-                continue
+        else:
+            print(f"Skipping {name}: geometry type {type(geometry)} not supported")
+            continue
 
-        # Step 1: Get bounds from the polygon
-        bounds = geometry.bounds  # (min_x, min_y, max_x, max_y)
-        min_x, min_y, max_x, max_y = map(int, bounds)
-
-        # Step 2: Create a mask for the polygon and apply it during cropping
-        mask = polygon_to_mask(geometry, im_shape)
+        # Get bounds and create mask
+        min_x, min_y, max_x, max_y = map(int, polygon.bounds)
+        mask = polygon_to_mask(polygon, im_shape)
         cropped_mask = mask[min_y:max_y, min_x:max_x]
 
-        # Step 3: Crop and apply the mask to each image channel
+        # Crop and mask each channel
         masked_cropped_im_dict = OrderedDict()
-        for channel_name, im in tqdm(
-            im_dict.items(),
-            total=len(im_dict),
-            desc=desc_channel,
-            bar_format=constants.TQDM_FORMAT,
-        ):
+        for channel_name, im in im_dict.items():
             cropped_im = im[min_y:max_y, min_x:max_x]
             masked_cropped_im = np.where(cropped_mask, cropped_im, fill)
             masked_cropped_im_dict[channel_name] = masked_cropped_im
+            pb.update(1)
 
         yield name, masked_cropped_im_dict
+
+
+################################################################################
+# Update GeoJSON
+################################################################################
+
+
+def update_geojson_classification(
+    geojson_f: Union[Path, str],
+    output_f: Union[Path, str],
+    name_dict: dict[Union[str, int], Union[str, int]],
+    color_dict: Optional[dict[Union[str, int], tuple[int, int, int]]] = None,
+) -> None:
+    """
+    Update classification names and colors in a GeoJSON file.
+
+    Parameters
+    ----------
+    geojson_f : Union[Path, str]
+        Input GeoJSON file path
+    output_f : Union[Path, str]
+        Output GeoJSON file path
+    name_dict : Union[dict[str, str], dict[int, str]]
+        Dictionary mapping original names to new classification names
+    color_dict : Optional[dict[Union[str, int], tuple[int, int, int]]], optional
+        Dictionary mapping classification names to RGB colors.
+        If not provided, colors will be automatically assigned.
+    """
+    # Read input GeoJSON
+    with open(geojson_f, "r") as f:
+        geojson_data = json.load(f)
+
+    # Generate colors if not provided
+    if color_dict is None:
+        unique_names = list(set(name_dict.values()))
+        colors = generate_distinct_colors(len(unique_names))
+        color_dict = dict(zip(unique_names, colors))
+
+    # Update features
+    features = geojson_data["features"]
+    for feature in features:
+        properties = feature["properties"]
+        if "name" in properties:
+            orig_name = properties["name"]
+            if orig_name in name_dict:
+                new_name = name_dict[orig_name]
+                properties["classification"] = {
+                    "name": new_name,
+                    "color": color_dict[new_name],
+                }
+
+    # Write output
+    output_path = Path(output_f)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump(geojson_data, f)
+
+
+if __name__ == "__main__":
+    # Test updating classification names and colors
+    geojson_f = "data/geojson/test.geojson"
+
+    # Test case 1: Basic name mapping
+    output_f = "data/geojson/test_updated_1.geojson"
+    name_dict = {"1": "Tumor", "2": "Stroma", "3": "Immune cells"}
+    update_geojson_classification(geojson_f, output_f, name_dict)
+
+    # Test case 2: Name mapping with custom colors
+    output_f = "data/geojson/test_updated_2.geojson"
+    color_dict = {
+        "Tumor": (255, 0, 0),  # Red
+        "Stroma": (0, 255, 0),  # Green
+        "Immune cells": (0, 0, 255),  # Blue
+    }
+    update_geojson_classification(geojson_f, output_f, name_dict, color_dict)
+
+    from pyqupath.ometiff import load_tiff_to_dict
+
+    im_dict = load_tiff_to_dict("data/ometiff/test.ome.tiff", filetype="ome.tiff")
+    for name, im_dict in crop_dict_by_geojson(im_dict, geojson_f):
+        # print(f"\n{name}")
+        for channel_name, im in im_dict.items():
+            # print(channel_name)
+            pass
