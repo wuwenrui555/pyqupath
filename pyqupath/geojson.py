@@ -24,8 +24,7 @@ def load_geojson_to_gdf(
     geojson_path: str = None,
     geojson_text: str = None,
 ) -> gpd.GeoDataFrame:
-    """
-    Load a GeoJSON file or string as GeoPandas GeoDataFrame.
+    """Load a GeoJSON file or string as GeoPandas GeoDataFrame.
 
     Parameters
     ----------
@@ -63,8 +62,7 @@ def polygon_to_mask(
     polygon: Polygon,
     shape: tuple[int, int],
 ) -> np.ndarray:
-    """
-    Generate a binary mask from a polygon.
+    """Generate a binary mask from a polygon.
 
     Parameters
     ----------
