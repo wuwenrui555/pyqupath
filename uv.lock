@@ -1227,8 +1227,8 @@ wheels = [
 
 [[package]]
 name = "pyqupath"
-version = "0.1.0"
-source = { virtual = "." }
+version = "0.0.5"
+source = { editable = "." }
 dependencies = [
     { name = "geopandas" },
     { name = "ipykernel" },
@@ -1256,7 +1256,7 @@ requires-dist = [
     { name = "ipykernel", specifier = ">=6.29.5" },
     { name = "joblib", specifier = ">=1.4.2" },
     { name = "matplotlib", specifier = ">=3.10.1" },
-    { name = "numpy", specifier = "==1.26.4" },
+    { name = "numpy", specifier = ">=1.26.4" },
     { name = "opencv-python", specifier = ">=4.11.0.86" },
     { name = "pandas", specifier = ">=2.2.3" },
     { name = "rasterio", specifier = ">=1.4.3" },
@@ -1267,7 +1267,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pyqupath", virtual = "." }]
+dev = [{ name = "pyqupath", editable = "." }]
 
 [[package]]
 name = "python-dateutil"
