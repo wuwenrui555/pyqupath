@@ -1,0 +1,28 @@
+[project]
+name = "pyqupath"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "geopandas>=1.0.1",
+    "ipykernel>=6.29.5",
+    "joblib>=1.4.2",
+    "matplotlib>=3.10.1",
+    "numpy==1.26.4",
+    "opencv-python>=4.11.0.86",
+    "pandas>=2.2.3",
+    "rasterio>=1.4.3",
+    "scikit-image>=0.25.2",
+    "tqdm>=4.67.1",
+    "tqdm-joblib>=0.0.4",
+    "zarr>=2.18.3",
+]
+
+[dependency-groups]
+dev = [
+    "pyqupath",
+]
+
+[tool.uv.sources]
+pyqupath = { workspace = true }
