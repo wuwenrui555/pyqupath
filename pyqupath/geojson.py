@@ -13,7 +13,7 @@ from tqdm import tqdm
 from tqdm_joblib import ParallelPbar
 
 from pyqupath import constants
-from pyqupath.color import generate_distinct_colors
+from pyqupath.color import assign_bright_colors
 
 ################################################################################
 # IO
@@ -24,7 +24,8 @@ def load_geojson_to_gdf(
     geojson_path: str = None,
     geojson_text: str = None,
 ) -> gpd.GeoDataFrame:
-    """Load a GeoJSON file or string as GeoPandas GeoDataFrame.
+    """
+    Load a GeoJSON file or string as GeoPandas GeoDataFrame.
 
     Parameters
     ----------
@@ -62,7 +63,8 @@ def polygon_to_mask(
     polygon: Polygon,
     shape: tuple[int, int],
 ) -> np.ndarray:
-    """Generate a binary mask from a polygon.
+    """
+    Generate a binary mask from a polygon.
 
     Parameters
     ----------
@@ -92,47 +94,6 @@ def polygon_to_mask(
 ################################################################################
 # Convert segmentation mask to GeoJSON
 ################################################################################
-
-
-def assign_bright_colors(x: list[str]) -> dict[str, tuple[int, int, int]]:
-    """
-    Assign bright RGB colors to variable values.
-
-    Parameters
-    ----------
-    x : list or array
-        A list or array of unique variable values to assign colors to.
-
-    Returns
-    -------
-    color_dict : dict
-        A dictionary mapping each variable value to a bright RGB color.
-    """
-    # Define a list of bright colors in RGB
-    bright_colors = [
-        (255, 0, 0),  # Red
-        (0, 255, 0),  # Green
-        (0, 0, 255),  # Blue
-        (255, 255, 0),  # Yellow
-        (255, 0, 255),  # Magenta
-        (0, 255, 255),  # Cyan
-        (255, 128, 0),  # Orange
-        (128, 0, 255),  # Purple
-        (0, 128, 255),  # Sky Blue
-        (255, 255, 255),  # White
-    ]
-
-    # Ensure there are enough colors
-    if len(x) > len(bright_colors):
-        np.random.seed(1)  # For reproducibility
-        # Randomly generate bright colors if there aren't enough predefined
-        for _ in range(len(x) - len(bright_colors)):
-            bright_colors.append(tuple(np.random.choice(range(128, 256), 3)))
-
-    # Map each variable value to a color
-    color_dict = {value: bright_colors[i] for i, value in enumerate(x)}
-
-    return color_dict
 
 
 def mask_to_geojson(
@@ -647,8 +608,7 @@ def update_geojson_classification(
     # Generate colors if not provided
     if color_dict is None:
         unique_names = list(set(name_dict.values()))
-        colors = generate_distinct_colors(len(unique_names))
-        color_dict = dict(zip(unique_names, colors))
+        color_dict = assign_bright_colors(unique_names)
 
     # Update features
     features = geojson_data["features"]

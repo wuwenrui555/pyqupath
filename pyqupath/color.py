@@ -62,7 +62,9 @@ def generate_distinct_colors(
     return colors
 
 
-def assign_bright_colors(labels: List[Union[str, int]]) -> dict:
+def assign_bright_colors(
+    labels: List[Union[str, int]],
+) -> dict[Union[str, int], Tuple[int, int, int]]:
     """
     Assign bright RGB colors to variable values.
 
@@ -76,7 +78,7 @@ def assign_bright_colors(labels: List[Union[str, int]]) -> dict:
 
     Returns
     -------
-    dict
+    dict[Union[str, int], Tuple[int, int, int]]
         Dictionary mapping each label to an RGB color tuple
     """
     n_colors = len(labels)
