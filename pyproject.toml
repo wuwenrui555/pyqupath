@@ -19,6 +19,7 @@ classifiers = [
 ]
 dependencies = [
     "geopandas>=1.0.1",
+    "imagecodecs>=2024.12.30",
     "ipykernel>=6.29.5",
     "joblib>=1.4.2",
     "matplotlib>=3.10.1",
