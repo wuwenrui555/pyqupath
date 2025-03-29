@@ -6,23 +6,17 @@ import multiprocessing
 import os
 import pathlib
 import re
-import sys
 import uuid
 from pathlib import Path
 from typing import Union
 from xml.etree import ElementTree
 
-import geopandas as gpd
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import skimage.transform
 import tifffile
 import zarr
-from shapely.geometry import Polygon
 from tqdm import tqdm
-
-from pyqupath.geojson import load_geojson_to_gdf, polygon_to_mask
 
 # from cchalign import constants
 # TQDM_FORMAT = constants.TQDM_FORMAT
@@ -70,7 +64,7 @@ class TiffZarrReader:
             raise ValueError(f"{filetype} is not supported right now.")
 
         # Initialize zarr reader
-        self.zimg = zarr.open(tifffile.imread(ometiff_f, level=0, aszarr=True))
+        self.zimg = zarr.open(tifffile.imread(self.path, level=0, aszarr=True))
 
         # Get channel names
         if self.zimg.ndim == 3:
@@ -90,7 +84,7 @@ class TiffZarrReader:
         # zimg_dict is a dictionary of zarr arrays, indexed by channel name
         self.zimg_dict = {
             channel_name: zarr.open(
-                tifffile.imread(ometiff_f, key=i, level=0, aszarr=True)
+                tifffile.imread(self.path, key=i, level=0, aszarr=True)
             )
             for i, channel_name in enumerate(self.channel_names)
         }
@@ -196,176 +190,357 @@ class TiffZarrReader:
 ################################################################################
 
 
-def export_ometiff_pyramid(
-    input_data: Union[list[Union[str, pathlib.Path]], dict[str, np.ndarray]],
-    output_f: Union[str, pathlib.Path],
-    channel_names: list[str] = None,
-    pixel_size: float = None,
-    tile_size: int = 256,
+def _validate_image_2d(
+    shape: tuple[int, int],
+    dtype: np.dtype,
+    target_shape: tuple[int, int],
     is_mask: bool = False,
-    num_threads: int = 0,
-    overwrite: bool = True,
+    msg_tag: str = None,
 ):
     """
-    Assemble a pyramidal OME-TIFF file.
+    Validate 2D image shape and data type.
 
     Parameters
     ----------
-    input_data : list of str or dict of str to np.ndarray
-        A list of file paths to the input TIFF images or a dictionary where keys
-        are channel names and values are 2D numpy arrays representing the images.
-        All images must have the same dimensions and pixel type.
-    output_f : str or pathlib.Path
-        Path to the output OME-TIFF file.
-    channel_names : list of str
-        Names of the channels in the OME-TIFF file. Each name corresponds to a
-        channel in the `input_data`. The length of this list must match the number
-        of files in `input_data`. Default is None.
-    pixel_size : float, optional
-        Pixel size in microns. Will be recorded in OME-XML metadata.
-    tile_size : int, optional
-        Width of pyramid tiles in output file (must be a multiple of 16).
-        Default is 256.
+    shape : tuple[int, int]
+        Shape of the image to validate.
+    dtype : np.dtype
+        Data type of the image.
+    target_shape : tuple[int, int]
+        Expected shape of the image.
     is_mask : bool, optional
-        Adjust processing for label mask or binary mask images (currently just
-        switch to nearest-neighbor downsampling). Default if False.
-    num_threads : int, optional
-        Number of parallel threads to use for image downsampling. Default is
-        number of available CPUs.
-    overwrite : bool, optional
-        If True, the function will overwrite the output file if it already exists.
-        If False, the function will terminate to prevent overwriting. Default
-        is True.
+        Whether the image is a mask. Default is False.
+    msg_tag : str, optional
+        Tag for error messages. Default is None.
+
+    Raises
+    ------
+    ValueError
+        When validation fails.
     """
+    if msg_tag is not None:
+        msg_tag = f"{msg_tag}: "
+    if dtype == np.uint32 or dtype == np.int32:
+        if not is_mask:
+            msg = f"{msg_tag}32-bit images are only supported in is_mask = True"
+            raise ValueError(msg)
+    elif dtype not in (np.uint8, np.uint16):
+        msg = f"{msg_tag}Unsupported dtype: {dtype}"
+        raise ValueError(msg)
 
-    def _error(path, msg):
-        """
-        Print an error message and exit the program.
-        """
-        print(f"\nERROR: {path}: {msg}")
-        sys.exit(1)
+    if shape != target_shape:
+        msg = f"{msg_tag}Shape mismatch: expected {target_shape}, got {shape}"
+        raise ValueError(msg)
 
-    def _image_validation(
-        shape: tuple[int, int],
-        dtype: np.dtype,
-        target_shape: tuple[int, int],
-        is_mask: bool = False,
-        msg_tag: str = None,
-    ):
-        """
-        Validate the shape and dtype of an image.
-        """
-        if dtype == np.uint32 or dtype == np.int32:
-            if not is_mask:
-                _error(
-                    msg_tag,
-                    "32-bit images are only supported in is_mask = True. "
-                    "Please contact the authors if you need support for "
-                    "intensity-based 32-bit images.",
-                )
-        elif dtype == np.uint8 or dtype == np.uint16:
-            pass
-        else:
-            _error(
-                msg_tag,
-                f"Can't handle dtype '{dtype}' yet, please contact the authors.",
-            )
-        if shape != target_shape:
-            _error(
-                msg_tag,
-                f"Expected shape {target_shape} to match first input image,"
-                f" got {shape} instead.",
-            )
 
-    output_f = pathlib.Path(output_f)
-    if output_f.exists():
-        if overwrite:
-            print(f"Overwriting existing file: {output_f}")
-            output_f.unlink()
-        else:
-            _error(output_f, "Output file already exists, remove before continuing.")
+def _process_dict_input(
+    input_data: dict[str, Union[np.ndarray, zarr.Array]],
+    channel_names: list[str] = None,
+    is_mask: bool = False,
+) -> tuple[list[zarr.Array], list[str], tuple[int, int], np.dtype]:
+    """
+    Process dictionary input format.
 
-    if num_threads == 0:
-        if hasattr(os, "sched_getaffinity"):
-            num_threads = len(os.sched_getaffinity(0))
-        else:
-            num_threads = multiprocessing.cpu_count()
-        print(f"Using {num_threads} worker threads based on detected CPU count.")
-        print()
-    tifffile.TIFF.MAXWORKERS = num_threads
-    tifffile.TIFF.MAXIOWORKERS = num_threads * 5
+    Parameters
+    ----------
+    input_data : dict[str, Union[np.ndarray, zarr.Array]]
+        Dictionary where keys are channel names and values are numpy arrays or
+        zarr arrays.
+    channel_names : list[str], optional
+        Names of the channels. If None, uses dictionary keys.
+    is_mask : bool, optional
+        Whether the images are masks.
 
-    if isinstance(input_data, dict):
-        if channel_names is None:
-            channel_names = list(input_data.keys())
-        in_imgs = [input_data[channel_name] for channel_name in channel_names]
+    Returns
+    -------
+    tuple
+        (in_imgs, channel_names, target_shape, target_dtype)
+    """
+    # Channel names
+    if channel_names is None:
+        channel_names = list(input_data.keys())
+    if len(channel_names) != len(input_data):
+        raise ValueError(
+            f"channel_names: Expected {len(input_data)} channel names, got {len(channel_names)}"
+        )
 
-        target_shape = in_imgs[0].shape
-        for channel_name, img_in in zip(channel_names, in_imgs):
-            if img_in.ndim != 2:
-                _error(
-                    channel_name,
-                    f"{img_in.ndim}-dimensional images are not supported",
-                )
-            _image_validation(
-                shape=img_in.shape,
-                dtype=img_in.dtype,
-                target_shape=target_shape,
-                msg_tag=channel_name,
-                is_mask=is_mask,
-            )
-    elif isinstance(input_data, list):
-        in_imgs = []
-        for i, path in tqdm(
-            enumerate(input_data, 1),
-            total=len(input_data),
-            desc="Loading images",
-            bar_format=TQDM_FORMAT,
-        ):
-            img_in = zarr.open(tifffile.imread(path, level=0, aszarr=True))
+    # Target image shape
+    target_shape = next(iter(input_data.values())).shape[-2:]
+
+    # Add validated images to list
+    in_imgs = []
+    in_chns = []
+    for channel_name, img_in in zip(channel_names, input_data.values()):
+        if isinstance(img_in, (np.ndarray, zarr.Array)):
             if img_in.ndim == 2:
-                shape = img_in.shape
-                imgs = [img_in]
-            elif img_in.ndim == 3:
-                shape = img_in.shape[1:]
-                imgs = [
-                    zarr.open(tifffile.imread(path, key=i, level=0, aszarr=True))
-                    for i in range(img_in.shape[0])
-                ]
-            else:
-                _error(
-                    path,
-                    f"{img_in.ndim}-dimensional images are not supported",
+                _validate_image_2d(
+                    shape=img_in.shape,
+                    dtype=img_in.dtype,
+                    target_shape=target_shape,
+                    is_mask=is_mask,
+                    msg_tag=channel_name,
                 )
-            if i == 1:
-                target_shape = shape
-            _image_validation(
-                shape=shape,
-                dtype=img_in.dtype,
-                target_shape=target_shape,
-                msg_tag=str(path),
-                is_mask=is_mask,
-            )
-            in_imgs.extend(imgs)
+                in_imgs.append(zarr.array(img_in))
+                in_chns.append(channel_name)
+            elif img_in.ndim == 3:
+                for i in range(img_in.shape[0]):
+                    img = img_in[i]
+                    _validate_image_2d(
+                        shape=img.shape,
+                        dtype=img.dtype,
+                        target_shape=target_shape,
+                        is_mask=is_mask,
+                        msg_tag=f"{channel_name}_{i}",
+                    )
+                    in_imgs.append(zarr.array(img))
+                    in_chns.append(f"{channel_name}_{i}")
+            else:
+                raise ValueError(
+                    f"{channel_name}: Unsupported dimensions: {img_in.ndim}"
+                )
+        else:
+            raise ValueError(f"{channel_name}: Unsupported type: {type(img_in)}")
+
+    # Convert to uniform dtype
     target_dtype = max([img.dtype for img in in_imgs])
     in_imgs = [img.astype(target_dtype) for img in in_imgs]
 
-    num_channels = len(in_imgs)
-    if channel_names and len(channel_names) != num_channels:
-        _error(
-            output_f,
-            f"Number of channel names ({len(channel_names)}) does not"
-            f" match number of channels in final image ({num_channels}).",
+    return in_imgs, in_chns, target_shape, target_dtype
+
+
+def _process_array_input(
+    input_data: Union[np.ndarray, zarr.Array],
+    channel_names: list[str] = None,
+    is_mask: bool = False,
+) -> tuple[list[zarr.Array], list[str], tuple[int, int], np.dtype]:
+    """
+    Process array input format (2D or 3D).
+
+    Parameters
+    ----------
+    input_data : Union[np.ndarray, zarr.Array]
+        2D or 3D array (C, H, W) input.
+    channel_names : list[str], optional
+        Names of the channels.
+    is_mask : bool, optional
+        Whether the images are masks.
+
+    Returns
+    -------
+    tuple
+        (in_imgs, channel_names, target_shape, target_dtype)
+    """
+    # Convert 2D array to 3D array
+    if input_data.ndim == 2:
+        input_data = input_data[np.newaxis, ...]
+    elif input_data.ndim == 3:
+        pass
+    else:
+        raise ValueError(
+            f"input_data: Expected 2D or 3D array, got shape {input_data.shape}"
         )
 
-    num_levels = np.ceil(np.log2(max(target_shape) / tile_size)) + 1
-    num_levels = 1 if num_levels < 1 else int(num_levels)
-    factors = 2 ** np.arange(num_levels)
-    # shape of the pyramid
-    shapes = np.ceil(np.array(target_shape) / factors[:, None]).astype(int)
-    # shape of the tiles in the pyramid
-    cshapes = np.ceil(shapes / tile_size).astype(int)
+    # Channel names and number of channels
+    if channel_names is None:
+        channel_names = [f"channel_{i}" for i in range(input_data.shape[0])]
+    if len(channel_names) != input_data.shape[0]:
+        raise ValueError(
+            f"channel_names: Expected {input_data.shape[0]} channel names, got {len(channel_names)}"
+        )
 
+    # Target image shape
+    target_shape = input_data.shape[-2:]
+
+    # Add validated images to list
+    in_imgs = []
+    in_chns = []
+    for channel_name, img in zip(channel_names, input_data):
+        _validate_image_2d(
+            shape=img.shape,
+            dtype=img.dtype,
+            target_shape=target_shape,
+            is_mask=is_mask,
+            msg_tag=channel_name,
+        )
+        in_imgs.append(zarr.array(img))
+        in_chns.append(channel_name)
+
+    # Convert to uniform dtype
+    target_dtype = max([img.dtype for img in in_imgs])
+    in_imgs = [img.astype(target_dtype) for img in in_imgs]
+
+    return in_imgs, in_chns, target_shape, target_dtype
+
+
+def _process_file_input(
+    input_data: list[Union[str, pathlib.Path]],
+    channel_names: list[str] = None,
+    is_mask: bool = False,
+) -> tuple[list[zarr.Array], list[str], tuple[int, int], np.dtype]:
+    """
+    Process file paths input format.
+
+    Parameters
+    ----------
+    input_data : list[Union[str, pathlib.Path]]
+        List of file paths to TIFF images.
+    channel_names : list[str], optional
+        Names of the channels.
+    is_mask : bool, optional
+        Whether the images are masks.
+
+    Returns
+    -------
+    tuple
+        (in_imgs, channel_names, target_shape, target_dtype)
+    """
+    # Channel names
+    if channel_names is None:
+        channel_names = [f"channel_{i}" for i in range(len(input_data))]
+    if len(channel_names) != len(input_data):
+        raise ValueError(
+            f"channel_names: Expected {len(input_data)} channel names, got {len(channel_names)}"
+        )
+
+    # Add validated images to list
+    in_imgs = []
+    in_chns = []
+    for i, path in tqdm(
+        enumerate(input_data),
+        total=len(input_data),
+        desc="Loading images",
+        bar_format=TQDM_FORMAT,
+    ):
+        channel_name = channel_names[i]
+        img_in = zarr.open(tifffile.imread(path, level=0, aszarr=True))
+        if i == 0:
+            target_shape = img_in.shape[-2:]
+
+        if img_in.ndim == 2:
+            shape = img_in.shape
+            _validate_image_2d(
+                shape=shape,
+                dtype=img_in.dtype,
+                target_shape=target_shape,
+                is_mask=is_mask,
+                msg_tag=channel_name,
+            )
+            in_imgs.append(zarr.array(img_in))
+            in_chns.append(channel_name)
+        elif img_in.ndim == 3:
+            shape = img_in.shape[1:]
+            for j in range(img_in.shape[0]):
+                img = img_in[j]
+                _validate_image_2d(
+                    shape=img.shape,
+                    dtype=img.dtype,
+                    target_shape=target_shape,
+                    is_mask=is_mask,
+                    msg_tag=f"{channel_name}_{j}",
+                )
+                in_imgs.append(zarr.array(img))
+                in_chns.append(f"{channel_name}_{j}")
+        else:
+            raise ValueError(f"{path}: Unsupported dimensions: {img_in.ndim}")
+
+    # Convert to uniform dtype
+    target_dtype = max([img.dtype for img in in_imgs])
+    in_imgs = [img.astype(target_dtype) for img in in_imgs]
+
+    return in_imgs, in_chns, target_shape, target_dtype
+
+
+def _process_input_data(
+    input_data: Union[
+        list[Union[str, pathlib.Path]],
+        dict[str, Union[np.ndarray, zarr.Array]],
+        np.ndarray,
+        zarr.Array,
+    ],
+    channel_names: list[str] = None,
+    is_mask: bool = False,
+) -> tuple[list[zarr.Array], list[str], tuple[int, int], np.dtype]:
+    """
+    Process input data into a unified format.
+
+    Parameters
+    ----------
+    input_data : Union[list[Union[str, pathlib.Path]], dict[str, Union[np.ndarray, zarr.Array]], np.ndarray, zarr.Array]
+        Input data in one of four formats:
+        1. A list of file paths to TIFF images
+        2. A dictionary where keys are channel names and values are numpy arrays or zarr arrays
+        3. A 2D numpy array or zarr array (will be treated as single channel)
+        4. A 3D numpy array or zarr array with shape (C, H, W) where C is the number of channels
+    channel_names : list[str], optional
+        Names of the channels in the OME-TIFF file. Each name corresponds to a
+        channel in the `input_data`. The length of this list must match the number
+        of channels. Default is None.
+    is_mask : bool, optional
+        Whether the input data represents mask images. This affects validation
+        rules for data types. Default is False.
+
+    Returns
+    -------
+    tuple
+        A tuple containing:
+        - list[zarr.Array]: List of zarr arrays
+        - list[str]: List of channel names
+        - tuple[int, int]: Target shape of the images
+        - np.dtype: Target data type for all images
+    """
+    if isinstance(input_data, dict):
+        return _process_dict_input(input_data, channel_names, is_mask)
+    elif isinstance(input_data, (np.ndarray, zarr.Array)):
+        return _process_array_input(input_data, channel_names, is_mask)
+    else:
+        return _process_file_input(input_data, channel_names, is_mask)
+
+
+def _calculate_pyramid_levels(
+    target_shape: tuple[int, int], tile_size: int
+) -> tuple[int, np.ndarray, np.ndarray]:
+    """
+    Calculate pyramid levels and shapes.
+
+    Parameters
+    ----------
+    target_shape : tuple[int, int]
+        The shape of the base image (height, width).
+    tile_size : int
+        The size of tiles in the pyramid.
+
+    Returns
+    -------
+    tuple
+        A tuple containing:
+        - int: Number of pyramid levels
+        - np.ndarray: Array of shapes of the pyramid
+        - np.ndarray: Array of shapes of the tiles in the pyramid
+    """
+    num_levels = max(1, int(np.ceil(np.log2(max(target_shape) / tile_size)) + 1))
+    factors = 2 ** np.arange(num_levels)
+    shapes = np.ceil(np.array(target_shape) / factors[:, None]).astype(int)
+    cshapes = np.ceil(shapes / tile_size).astype(int)
+    return num_levels, shapes, cshapes
+
+
+def _create_metadata(pixel_size: float = None, channel_names: list[str] = None) -> dict:
+    """
+    Create OME-TIFF metadata.
+
+    Parameters
+    ----------
+    pixel_size : float, optional
+        Physical size of pixels in microns. Will be recorded in OME-XML metadata.
+    channel_names : list[str], optional
+        Names of the channels in the OME-TIFF file.
+
+    Returns
+    -------
+    dict
+        Dictionary containing OME-TIFF metadata including UUID, physical size,
+        and channel names if provided.
+    """
     metadata = {"UUID": uuid.uuid4().urn}
     if pixel_size:
         metadata.update(
@@ -382,13 +557,51 @@ def export_ometiff_pyramid(
                 "Channel": {"Name": channel_names},
             }
         )
+    return metadata
 
+
+def _create_tile_generators(
+    in_imgs: list[zarr.Array],
+    cshapes: np.ndarray,
+    tile_size: int,
+    num_channels: int,
+    is_mask: bool,
+    target_dtype: np.dtype,
+    num_threads: int,
+    output_f: pathlib.Path,
+) -> tuple[callable, callable]:
+    """Create tile generators for base and pyramid levels.
+
+    Parameters
+    ----------
+    in_imgs : list[zarr.Array]
+        List of input images as zarr arrays.
+    cshapes : np.ndarray
+        Array of shapes of the tiles in the pyramid.
+    tile_size : int
+        Size of tiles in the pyramid.
+    num_channels : int
+        Number of channels in the images.
+    is_mask : bool
+        Whether the images are masks (affects downsampling method).
+    target_dtype : np.dtype
+        Target data type for all tiles.
+    num_threads : int
+        Number of threads for parallel processing.
+    output_f : pathlib.Path
+        Path to the output file.
+
+    Returns
+    -------
+    tuple[callable, callable]
+        A tuple containing two generator functions:
+        - First function generates tiles for the base level
+        - Second function generates tiles for pyramid levels
+    """
     pool = concurrent.futures.ThreadPoolExecutor(num_threads)
 
     def tiles0():
-        """
-        Generate tiles for the first level of the pyramid
-        """
+        """Generate tiles for the first level."""
         ts = tile_size
         ch, cw = cshapes[0]
         for c, zimg in enumerate(in_imgs, 1):
@@ -400,17 +613,12 @@ def export_ometiff_pyramid(
             del img
 
     def tiles(level):
-        """
-        Generate tiles for the given level of the pyramid
-        """
+        """Generate tiles for pyramid levels."""
         with tifffile.TiffFile(output_f, is_ome=False) as tiff_out:
             zimg = zarr.open(tiff_out.series[0].aszarr(level=level - 1))
             ts = tile_size * 2
 
         def tile(coords):
-            """
-            Generate a tile for the given coordinates
-            """
             c, j, i = coords
             if zimg.ndim == 2:
                 assert c == 0
@@ -418,8 +626,6 @@ def export_ometiff_pyramid(
             else:
                 tile = zimg[c, ts * j : ts * (j + 1), ts * i : ts * (i + 1)]
             if is_mask:
-                # Use nearest-neighbor downsampling for masks
-                # Simply take every second pixel instead of averaging
                 tile = tile[::2, ::2]
             else:
                 tile = skimage.transform.downscale_local_mean(tile, (2, 2))
@@ -430,6 +636,109 @@ def export_ometiff_pyramid(
         coords = itertools.product(range(num_channels), range(ch), range(cw))
         yield from pool.map(tile, coords)
 
+    return tiles0, tiles
+
+
+def export_ometiff_pyramid(
+    input_data: Union[list[Union[str, pathlib.Path]], dict[str, np.ndarray]],
+    output_f: Union[str, pathlib.Path],
+    channel_names: list[str] = None,
+    pixel_size: float = None,
+    tile_size: int = 256,
+    is_mask: bool = False,
+    num_threads: int = 8,
+    overwrite: bool = True,
+):
+    """
+    Assemble a pyramidal OME-TIFF file.
+
+    Parameters
+    ----------
+    input_data : Union[list[Union[str, pathlib.Path]], dict[str, np.ndarray]]
+        A list of file paths to the input TIFF images or a dictionary where keys
+        are channel names and values are 2D numpy arrays representing the images.
+        All images must have the same dimensions and pixel type.
+    output_f : Union[str, pathlib.Path]
+        Path to the output OME-TIFF file.
+    channel_names : list[str], optional
+        Names of the channels in the OME-TIFF file. Each name corresponds to a
+        channel in the `input_data`. The length of this list must match the number
+        of files in `input_data`. Default is None.
+    pixel_size : float, optional
+        Pixel size in microns. Will be recorded in OME-XML metadata.
+    tile_size : int, optional
+        Width of pyramid tiles in output file (must be a multiple of 16).
+        Default is 256.
+    is_mask : bool, optional
+        Adjust processing for label mask or binary mask images (currently just
+        switch to nearest-neighbor downsampling). Default is False.
+    num_threads : int, optional
+        Number of parallel threads to use for image downsampling. Default is
+        number of available CPUs.
+    overwrite : bool, optional
+        If True, the function will overwrite the output file if it already exists.
+        If False, the function will terminate to prevent overwriting. Default
+        is True.
+
+    Raises
+    ------
+    ValueError
+        When input validation fails.
+    FileExistsError
+        When output file exists and overwrite is False.
+    """
+    # Setup output file
+    output_f = pathlib.Path(output_f)
+    if output_f.exists():
+        if overwrite:
+            print(f"Overwriting existing file: {output_f}")
+            output_f.unlink()
+        else:
+            raise FileExistsError(f"Output file already exists: {output_f}")
+
+    # Setup threads
+    if num_threads == 0:
+        if hasattr(os, "sched_getaffinity"):
+            num_threads = len(os.sched_getaffinity(0))
+        else:
+            num_threads = multiprocessing.cpu_count()
+        print(f"Using {num_threads} worker threads")
+    tifffile.TIFF.MAXWORKERS = num_threads
+    tifffile.TIFF.MAXIOWORKERS = num_threads * 5
+
+    # Process input data
+    in_imgs, in_chns, target_shape, target_dtype = _process_input_data(
+        input_data=input_data,
+        channel_names=channel_names,
+        is_mask=is_mask,
+    )
+    num_channels = len(in_chns)
+
+    # Calculate pyramid levels
+    num_levels, shapes, cshapes = _calculate_pyramid_levels(
+        target_shape=target_shape,
+        tile_size=tile_size,
+    )
+
+    # Create metadata
+    metadata = _create_metadata(
+        pixel_size=pixel_size,
+        channel_names=in_chns,
+    )
+
+    # Create tile generators
+    tiles0, tiles = _create_tile_generators(
+        in_imgs=in_imgs,
+        cshapes=cshapes,
+        tile_size=tile_size,
+        num_channels=num_channels,
+        is_mask=is_mask,
+        target_dtype=target_dtype,
+        num_threads=num_threads,
+        output_f=output_f,
+    )
+
+    # Write pyramid
     with tifffile.TiffWriter(output_f, ome=True, bigtiff=True) as writer:
         for level, shape in tqdm(
             enumerate(shapes),
@@ -458,7 +767,6 @@ def export_ometiff_pyramid(
                     compression="adobe_deflate",
                     predictor=True,
                 )
-    print()
 
 
 def main():
