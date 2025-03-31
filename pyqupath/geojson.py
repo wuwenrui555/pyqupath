@@ -12,7 +12,13 @@ import pandas as pd
 import zarr
 from joblib import delayed
 from rasterio.features import rasterize
-from shapely.geometry import MultiPolygon, Polygon, mapping
+from shapely.geometry import (
+    LineString,
+    MultiPolygon,
+    Point,
+    Polygon,
+    mapping,
+)
 from tqdm import tqdm
 from tqdm_joblib import ParallelPbar
 
@@ -34,9 +40,16 @@ class GeojsonProcessor:
 
     DEFAULT_CLASSIFICATION = json.dumps({"name": "unknown", "color": [128, 128, 128]})
 
-    def __init__(self, gdf: gpd.GeoDataFrame):
+    def __init__(self, gdf: gpd.GeoDataFrame, polygon_only: bool = True):
         """
         Initialize a GeojsonProcessor with a GeoDataFrame.
+
+        Parameters
+        ----------
+        gdf : gpd.GeoDataFrame
+            The GeoDataFrame containing the GeoJSON data.
+        polygon_only : bool, optional
+            Whether to only keep Polygon geometries. Default is True.
         """
         # Set name as string
         gdf["name"] = gdf["name"].astype(str)
@@ -48,31 +61,42 @@ class GeojsonProcessor:
         # Store raw GeoDataFrame
         self.gdf_raw = gdf.copy()
 
+        # Fix geometry to polygon
+        if polygon_only:
+            gdf["geometry"] = gdf["geometry"].apply(
+                PolygonProcessor.fix_geometry_to_polygon
+            )
+            idx_polygon = gdf["geometry"].notna()
+            print(f"Skipped {sum(~idx_polygon)} geometries: ")
+            for geom in self.gdf_raw[~idx_polygon]["geometry"].unique():
+                print(f"    {geom}")
+            gdf = gdf[idx_polygon]
+
         # Set index
         self.gdf = gdf
         self.set_index(index="name", inplace=True)
 
     @classmethod
-    def from_path(cls, geojson_f: Union[Path, str]):
+    def from_path(cls, geojson_f: Union[Path, str], polygon_only: bool = True):
         """
         Create a GeojsonProcessor from a GeoJSON file path.
         """
         gdf = gpd.read_file(geojson_f)
-        return cls(gdf)
+        return cls(gdf, polygon_only)
 
     @classmethod
-    def from_text(cls, geojson_text: str):
+    def from_text(cls, geojson_text: str, polygon_only: bool = True):
         """
         Create a GeojsonProcessor from a GeoJSON text string.
         """
         geojson_data = json.loads(geojson_text)
         gdf = gpd.GeoDataFrame.from_features(geojson_data["features"])
-        return cls(gdf)
+        return cls(gdf, polygon_only)
 
     @staticmethod
-    def _add_classification(gdf: gpd.GeoDataFrame):
+    def _add_classification(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         """
-        Add classification information to the GeoDataFrame.
+        Add classification (name and color) as separate columns to the GeoDataFrame.
 
         Parameters
         ----------
@@ -83,13 +107,20 @@ class GeojsonProcessor:
         -------
         gpd.GeoDataFrame
             The GeoDataFrame with classification information added.
+            - cls_name: The name of the classification.
+            - cls_color: The color of the classification.
         """
+        gdf = gdf.copy()
         cls_data = []
         for item in gdf["classification"]:
             item = json.loads(item)
             name = item.get("name", "")
             color_rgb = item.get("color", "")
-            color_hex = f"#{color_rgb[0]:02x}{color_rgb[1]:02x}{color_rgb[2]:02x}"
+            color_hex = (
+                f"#{color_rgb[0]:02x}{color_rgb[1]:02x}{color_rgb[2]:02x}"
+                if isinstance(color_rgb, (list, tuple)) and len(color_rgb) >= 3
+                else ""
+            )
             cls_data.append({"cls_name": name, "cls_color": color_hex})
         cls_df = pd.DataFrame(cls_data)
         cls_df.index = gdf.index
@@ -120,8 +151,10 @@ class GeojsonProcessor:
         plt.Figure
             The figure object.
         """
+        # Add classification information to the GeoDataFrame
         gdf = GeojsonProcessor._add_classification(gdf)
 
+        # Create figure and axis if not provided
         if ax is None:
             fig, ax = plt.subplots(figsize=figsize)
         else:
@@ -131,9 +164,8 @@ class GeojsonProcessor:
             ax=ax,
             legend=False,
             color=gdf["cls_color"],
-            aspect=1,  # Set a valid aspect ratio
+            aspect=1,
         )
-        ax.invert_yaxis()
 
         if legend:
             unique_classes = gdf[["cls_name", "cls_color"]].drop_duplicates()
@@ -144,7 +176,7 @@ class GeojsonProcessor:
                 loc="center left",
                 bbox_to_anchor=(1, 0.5),
             )
-
+        ax.invert_yaxis()
         ax.set_aspect("equal")
 
         return fig
@@ -218,7 +250,7 @@ class GeojsonProcessor:
             gdf = self.gdf_raw
         else:
             gdf = self.gdf
-        return self._plot_classification(gdf, figsize, legend, ax)
+        return GeojsonProcessor._plot_classification(gdf, figsize, legend, ax)
 
     def update_classification(
         self,
@@ -243,18 +275,110 @@ class GeojsonProcessor:
             color_dict = assign_bright_colors(unique_names)
 
         # Update classification
+        cls_raw = self.gdf["classification"].copy()
         cls_name = self.gdf["name"].map(name_dict)
         cls_color = cls_name.map(color_dict)
         self.gdf["classification"] = [
             json.dumps({"name": name, "color": color})
             for name, color in zip(cls_name, cls_color)
         ]
+        self.gdf.loc[cls_name.isna(), "classification"] = cls_raw[cls_name.isna()]
 
     def output_geojson(self, output_f: Path):
         """
         Output the GeoDataFrame as a GeoJSON file.
         """
         self.gdf.to_file(output_f, driver="GeoJSON")
+
+    def crop_dict_by_polygons(
+        self,
+        img_dict: dict[str, Union[np.ndarray, zarr.Array]],
+        fill_value: float = 0,
+    ) -> Generator[tuple[str, dict[str, np.ndarray]], None, None]:
+        """
+        Crop a dictionary of images (2D numpy arrays) by polygons in the GeoDataFrame.
+
+        Parameters
+        ----------
+        img_dict : dict[str, Union[np.ndarray, zarr.Array]]
+            A dictionary of images to crop.
+        fill_value : float, optional
+            Value to fill outside the polygon. Default is 0.
+
+        Returns
+        -------
+        Generator[tuple[str, dict[str, np.ndarray]], None, None]
+            A generator of tuples containing:
+            - name: The name of the polygon
+            - cropped_img_dict: A dictionary of cropped images with mask applied
+        """
+        # Validate the image dimensions
+        if not all(img.ndim == 2 for img in img_dict.values()):
+            raise ValueError("All images in img_dict must be 2D numpy arrays")
+
+        # Validate all images have the same shape
+        shapes = [img.shape for img in img_dict.values()]
+        if len(shapes) > 0 and not all(shape == shapes[0] for shape in shapes):
+            raise ValueError("All images in img_dict must have the same dimensions")
+
+        names = self.gdf.index.tolist()
+        polygons = self.gdf["geometry"].tolist()
+
+        # Crop the images
+        for name, polygon in zip(names, polygons):
+            polygon_processor = PolygonProcessor(polygon)
+            cropped_img_dict = {
+                channel_name: polygon_processor.crop_array_by_polygon(
+                    img_dict[channel_name], fill_value=fill_value
+                )[0]
+                for channel_name in img_dict.keys()
+            }
+            yield name, cropped_img_dict
+
+    def crop_array_by_polygons(
+        self,
+        img: Union[np.ndarray, zarr.Array],
+        dim_order: str = "CYX",
+        fill_value: float = 0,
+    ) -> Generator[tuple[str, np.ndarray], None, None]:
+        """
+        Crop an image (2D or 3D numpy array) using polygons in the GeoDataFrame.
+
+        Parameters
+        ----------
+        img : np.ndarray or zarr.Array
+            The image to crop.
+        dim_order : str, optional
+            The dimension order of the image. Default is "CYX".
+            Supported values are "CYX" (channel, y, x) and "YXC" (y, x, channel).
+        fill_value : float, optional
+            Value to fill outside the polygon. Default is 0.
+
+        Returns
+        -------
+        Generator[tuple[str, np.ndarray], None, None]
+            A generator of tuples containing:
+            - name: The name of the polygon
+            - cropped_img: The cropped image with mask applied
+        """
+        # Validate the image dimensions
+        if img.ndim not in [2, 3]:
+            raise ValueError("Image must be 2D or 3D numpy array")
+
+        # Validate the dimension order
+        if dim_order not in ["CYX", "YXC"]:
+            raise ValueError("dim_order must be 'CYX' or 'YXC'")
+
+        names = self.gdf.index.tolist()
+        polygons = self.gdf["geometry"].tolist()
+
+        # Crop the image
+        for name, polygon in zip(names, polygons):
+            polygon_processor = PolygonProcessor(polygon)
+            cropped_img, _ = polygon_processor.crop_array_by_polygon(
+                img, dim_order, fill_value
+            )
+            yield name, cropped_img
 
 
 ################################################################################
@@ -267,11 +391,59 @@ class PolygonProcessor:
     A class for processing polygon geometries and applying them to images.
     """
 
-    def __init__(self, polygon: Polygon):
+    MULTIPOLYGON_AREA_RATIO = 100
+    LINESTRING_END_DISTANCE_THRESHOLD = 50
+
+    def __init__(self, geometry):
         """
-        Initialize a PolygonProcessor with a Shapely polygon.
+        Initialize a PolygonProcessor with a Shapely geometry.
         """
-        self.polygon = polygon
+        geometry = PolygonProcessor.fix_geometry_to_polygon(
+            geometry,
+            PolygonProcessor.MULTIPOLYGON_AREA_RATIO,
+            PolygonProcessor.LINESTRING_END_DISTANCE_THRESHOLD,
+        )
+        if geometry is None:
+            raise ValueError("Geometry is an invalid Polygon")
+        self.polygon = geometry
+
+    @staticmethod
+    def fix_geometry_to_polygon(
+        geometry,
+        multipolygon_area_ratio: float = 100,
+        linestring_end_distance: float = 50,
+    ) -> Union[Polygon, None]:
+        """
+        Fix a geometry to a Polygon.
+
+        This function will fix a geometry to a Polygon:
+        - Polygon
+            Return the Polygon unchanged.
+        - MultiPolygon
+            If the largest Polygon is significantly larger than the second
+            largest Polygon (largest / second >= `multipolygon_area_ratio`),
+            return the largest Polygon. Otherwise, return None.
+        - LineString
+            If the distance between the start and end points is less than
+            `linestring_end_distance`, return a closed Polygon by linking the ends.
+            Otherwise, return None.
+        - Other
+            Return None.
+        """
+        if isinstance(geometry, Polygon):
+            return geometry
+        elif isinstance(geometry, MultiPolygon):
+            return PolygonProcessor._fix_multipolygon(
+                geometry,
+                multipolygon_area_ratio,
+            )
+        elif isinstance(geometry, LineString):
+            return PolygonProcessor._fix_linestring(
+                geometry,
+                linestring_end_distance,
+            )
+        else:
+            return None
 
     @staticmethod
     def polygon_to_mask(polygon: Polygon, shape: tuple[int, int]) -> np.ndarray:
@@ -280,8 +452,6 @@ class PolygonProcessor:
 
         Parameters
         ----------
-        polygon : shapely.geometry.Polygon
-            The polygon object defining the region of interest.
         shape : tuple
             The shape of the output mask as (height, width).
 
@@ -300,6 +470,105 @@ class PolygonProcessor:
         ).astype(bool)
         return mask
 
+    @staticmethod
+    def _fix_multipolygon(
+        multipolygon: MultiPolygon,
+        area_ratio_threshold: float,
+    ) -> Union[Polygon, None]:
+        """
+        Fix a MultiPolygon by returning the largest polygon.
+
+        MultiPolygon is a collection of polygons. If the largest polygon is
+        significantly larger than the second largest polygon (area ratio is
+        greater than `area_ratio_threshold`), return the largest polygon.
+        Otherwise, skip the MultiPolygon.
+
+        Parameters
+        ----------
+        multipolygon : MultiPolygon
+            The MultiPolygon to fix.
+        area_ratio_threshold : float
+            The area ratio (largest / second largest) threshold to determine if
+            the largest polygon is significantly larger than the second largest.
+
+        Returns
+        -------
+        Polygon
+            The largest polygon if it meets the area ratio criteria.
+        """
+        # Extract polygons from MultiPolygon
+        polygons = [p for p in multipolygon.geoms if isinstance(p, Polygon)]
+        if not polygons:
+            print("Skipping MultiPolygon: contains no valid Polygons")
+            return None
+
+        # Get the areas of the polygons
+        areas = [p.area for p in polygons]
+        sorted_indices = np.argsort(areas)[::-1]  # Sort in descending order
+
+        if len(areas) == 1:
+            return polygons[sorted_indices[0]]
+        else:
+            largest_area = areas[sorted_indices[0]]
+            second_largest = areas[sorted_indices[1]]
+            area_ratio = largest_area / second_largest
+            if area_ratio >= area_ratio_threshold:
+                print(
+                    f"Fixing MultiPolygon: "
+                    f"area ratio {area_ratio:.2f} >= {area_ratio_threshold:.2f}"
+                )
+                return polygons[sorted_indices[0]]
+            else:
+                print(
+                    f"Skipping MultiPolygon: "
+                    f"area ratio {area_ratio:.2f} < {area_ratio_threshold:.2f}"
+                )
+                return None
+
+    @staticmethod
+    def _fix_linestring(
+        linestring: LineString,
+        end_distance_threshold: float,
+    ) -> Union[Polygon, None]:
+        """
+        Fix a LineString by buffering the end points.
+
+        If the distance between the end points is less than `end_distance_threshold`,
+        return None. Otherwise, return a buffered polygon.
+
+        Parameters
+        ----------
+        linestring : LineString
+            The LineString to fix.
+        end_distance_threshold : float
+            The distance threshold to determine if the LineString is a closed polygon.
+
+        Returns
+        -------
+        Polygon
+            The buffered polygon if the distance is greater than the threshold.
+        """
+        # Calculate the distance between start and end points
+        start_point = Point(linestring.coords[0])
+        end_point = Point(linestring.coords[-1])
+        end_distance = start_point.distance(end_point)
+
+        # If the distance is smaller than threshold, create a polygon by linking the ends
+        if end_distance <= end_distance_threshold:
+            coords = list(linestring.coords) + [linestring.coords[0]]
+            closed_linestring = LineString(coords)
+            print(
+                f"Fixing LineString: "
+                f"end distance {end_distance:.2f} <= {end_distance_threshold:.2f}"
+            )
+            return Polygon(closed_linestring)
+        else:
+            print(
+                f"Skipping LineString: "
+                f"end distance {end_distance:.2f} > {end_distance_threshold:.2f}"
+            )
+            return None
+
     def crop_array_by_polygon(
         self,
         img: Union[np.ndarray, zarr.Array],
@@ -314,8 +583,9 @@ class PolygonProcessor:
         img : np.ndarray or zarr.Array
             The image to crop.
         dim_order : str, optional
-            The dimension order of the image. Default is "CYX".
-            Supported values are "CYX" (channel, y, x) and "YXC" (y, x, channel).
+            The dimension order of the image. Default is "CYX". Only used if the
+            image is 3D. Supported values are "CYX" (channel, y, x) and "YXC"
+            (y, x, channel).
         fill_value : float, optional
             Value to fill outside the polygon. Default is 0.
 
@@ -325,25 +595,20 @@ class PolygonProcessor:
             A tuple containing:
             - masked_image: The cropped image with mask applied
             - mask: The binary mask
-
-        Raises
-        ------
-        ValueError
-            If the image dimension order is not supported or if the image is not 2D or 3D.
         """
         # Get image dimensions from the image
         height, width = img.shape[-2:]
 
         # Calculate bounds of the polygon
-        y_min, x_min, y_max, x_max = self.polygon.bounds
+        x_min, y_min, x_max, y_max = self.polygon.bounds
         y_min = max(0, int(np.floor(y_min)))
         y_max = min(height, int(np.ceil(y_max)))
         x_min = max(0, int(np.floor(x_min)))
         x_max = min(width, int(np.ceil(x_max)))
 
         # Shift the polygon to the cropped region
-        y_coords = [y - y_min for y in self.polygon.exterior.coords.xy[0]]
-        x_coords = [x - x_min for x in self.polygon.exterior.coords.xy[1]]
+        x_coords = [x - x_min for x in self.polygon.exterior.coords.xy[0]]
+        y_coords = [y - y_min for y in self.polygon.exterior.coords.xy[1]]
         shifted_polygon = Polygon(zip(x_coords, y_coords))
 
         # Create mask for the shifted polygon
@@ -373,101 +638,6 @@ class PolygonProcessor:
         img_masked = shifted_img * mask + int(fill_value) * (1 - mask)
 
         return img_masked, mask
-
-
-def crop_dict_by_geojson_batch(
-    img_dict: dict[str, Union[np.ndarray, zarr.Array]],
-    geojson_f: Union[Path, str],
-    fill_value: float = 0,
-) -> Generator[tuple[str, dict[str, np.ndarray]], None, None]:
-    """
-    Crop a dictionary of images (2D numpy arrays) by a list of polygons.
-
-    Parameters
-    ----------
-    img_dict : dict[str, Union[np.ndarray, zarr.Array]]
-        A dictionary of images to crop.
-    geojson_f : Union[Path, str]
-        The path to the geojson file.
-    fill_value : float, optional
-        Value to fill outside the polygon. Default is 0.
-
-    Returns
-    -------
-    Generator[tuple[str, dict[str, np.ndarray]], None, None]
-        A generator of tuples containing:
-        - name: The name of the polygon
-        - cropped_img_dict: A dictionary of cropped images with mask applied
-    """
-    # Validate the image dimensions
-    if not all(img.ndim == 2 for img in img_dict.values()):
-        raise ValueError("All images in img_dict must be 2D numpy arrays")
-
-    # Read the geojson file
-    geojson_reader = GeojsonProcessor.from_path(geojson_f)
-    names = geojson_reader.gdf.index.tolist()
-    polygons = geojson_reader.gdf["geometry"].tolist()
-
-    # Crop the images
-    for name, polygon in zip(names, polygons):
-        polygon_processor = PolygonProcessor(polygon)
-        cropped_img_dict = {
-            ch: polygon_processor.crop_array_by_polygon(
-                img_dict[ch], fill_value=fill_value
-            )[0]
-            for ch in img_dict.keys()
-        }
-        yield name, cropped_img_dict
-
-
-def crop_array_by_geojson_batch(
-    img: Union[np.ndarray, zarr.Array],
-    geojson_f: Union[Path, str],
-    dim_order: str = "CYX",
-    fill_value: float = 0,
-) -> Generator[tuple[str, np.ndarray], None, None]:
-    """
-    Crop an image (2D or 3D numpy array) using a list of polygons.
-
-    Parameters
-    ----------
-    img : np.ndarray or zarr.Array
-        The image to crop.
-    geojson_f : Union[Path, str]
-        The path to the geojson file.
-    dim_order : str, optional
-        The dimension order of the image. Default is "CYX".
-        Supported values are "CYX" (channel, y, x) and "YXC" (y, x, channel).
-    fill_value : float, optional
-        Value to fill outside the polygon. Default is 0.
-
-    Returns
-    -------
-    Generator[tuple[str, np.ndarray], None, None]
-        A generator of tuples containing:
-        - name: The name of the polygon
-        - cropped_img: The cropped image with mask applied
-    """
-    # Validate the image dimensions
-    if img.ndim not in [2, 3]:
-        raise ValueError("Image must be 2D or 3D numpy array")
-
-    # Validate the dimension order
-    if dim_order not in ["CYX", "YXC"]:
-        raise ValueError("dim_order must be 'CYX' or 'YXC'")
-
-    # Read the geojson file
-    geojson_reader = GeojsonProcessor.from_path(geojson_f)
-    names = geojson_reader.gdf.index.tolist()
-    polygons = geojson_reader.gdf["geometry"].tolist()
-
-    # Crop the image
-    for name, polygon in zip(names, polygons):
-        polygon_processor = PolygonProcessor(polygon)
-        cropped_img, _ = polygon_processor.crop_array_by_polygon(
-            img, dim_order, fill_value
-        )
-        yield name, cropped_img
 
 
 ################################################################################
@@ -1038,21 +1208,40 @@ def crop_dict_by_geojson(
         yield name, masked_cropped_im_dict
 
 
+# %%
 ################################################################################
 # Test
 ################################################################################
 
 
 def main():
+    # %%
     from pyqupath.tiff import TiffZarrReader
 
-    # Test plotting classification
-    print("Test plotting classification")
     geojson_f = Path(__file__).parent.parent / "data/geojson/test.geojson"
+    tiff_f = Path(__file__).parent.parent / "data/ometiff/test_3d_pyramid.ome.tiff"
     output_f = Path(__file__).parent.parent / "data/geojson/test_updated_1.geojson"
 
+    # %% Test plotting classification (polygon only)
+    print("Test plotting classification (polygon only)")
     name_dict = {"1": "Tumor", "2": "Stroma", "3": "Immune cells"}
-    geojson_processor = GeojsonProcessor.from_path(geojson_f)
+    geojson_processor = GeojsonProcessor.from_path(geojson_f, polygon_only=True)
+    geojson_processor.update_classification(name_dict)
+
+    fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+    ax = axs[0]
+    geojson_processor.plot_classification(plot_raw=True, legend=False, ax=ax)
+    ax.set_title("Raw")
+    ax = axs[1]
+    geojson_processor.plot_classification(ax=ax)
+    ax.set_title("Updated")
+    plt.tight_layout()
+    plt.show()
+
+    # %% Test plotting classification (all)
+    print("Test plotting classification (all)")
+    name_dict = {"1": "Tumor", "2": "Stroma", "3": "Immune cells"}
+    geojson_processor = GeojsonProcessor.from_path(geojson_f, polygon_only=False)
     geojson_processor.update_classification(name_dict)
 
     fig, axs = plt.subplots(1, 2, figsize=(10, 5))
@@ -1067,16 +1256,23 @@ def main():
 
     geojson_processor.output_geojson(output_f)
 
-    # Test cropping array
-    print("Test cropping array")
-    tiff_f = Path(__file__).parent.parent / "data/ometiff/test_3d_pyramid.ome.tiff"
-    geojson_f = Path(__file__).parent.parent / "data/geojson/test.geojson"
-
+    # %% Test plotting classification on image
+    print("Test plotting classification on image")
+    geojson_processor = GeojsonProcessor.from_path(geojson_f, polygon_only=True)
     tiff_reader = TiffZarrReader.from_ometiff(tiff_f)
-    img = tiff_reader.zimg
-    print(img.shape)
 
-    for name, cropped_img in crop_array_by_geojson_batch(img, geojson_f):
+    img = tiff_reader.zimg
+    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+    ax.imshow(img[0])
+    geojson_processor.plot_classification(ax=ax)
+    ax.invert_yaxis()
+    plt.show()
+
+    # %% Test cropping array
+    print("Test cropping array")
+    for name, cropped_img in geojson_processor.crop_array_by_polygons(
+        img, dim_order="CYX", fill_value=0
+    ):
         n_plot = min(6, len(cropped_img))
         fig, axs = plt.subplots(
             int(np.floor(np.sqrt(n_plot))),
@@ -1094,7 +1290,7 @@ def main():
         plt.suptitle(f"Test cropping array: {name}")
         plt.show()
 
-    # Test cropping dict
+    # %% Test cropping dict
     print("Test cropping dict")
     tiff_f = Path(__file__).parent.parent / "data/ometiff/test_3d_pyramid.ome.tiff"
     geojson_f = Path(__file__).parent.parent / "data/geojson/test.geojson"
@@ -1103,7 +1299,10 @@ def main():
     im_dict = tiff_reader.zimg_dict
     channel_names = tiff_reader.channel_names
 
-    for name, cropped_im_dict in crop_dict_by_geojson_batch(im_dict, geojson_f):
+    geojson_processor = GeojsonProcessor.from_path(geojson_f, polygon_only=True)
+    for name, cropped_im_dict in geojson_processor.crop_dict_by_polygons(
+        im_dict, fill_value=0
+    ):
         n_plot = min(6, len(cropped_im_dict))
         fig, axs = plt.subplots(
             int(np.floor(np.sqrt(n_plot))),
@@ -1122,7 +1321,6 @@ def main():
         plt.show()
 
 
+# %%
 if __name__ == "__main__":
     main()
-
-# %%
