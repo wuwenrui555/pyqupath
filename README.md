@@ -14,23 +14,27 @@ A Python package for processing and analyzing microscopy images with QuPath inte
     - `from_text()`: Create processor from GeoJSON text
   - Properties:
     - `gdf`: The GeoDataFrame containing the GeoJSON data
+    - `gdf_raw`: The raw GeoDataFrame before polygon filtering
   - Methods:
     - `set_index()`: Set index with duplicate handling
     - `plot_classification()`: Plot classifications with legend
     - `update_classification()`: Update classification names and colors
     - `output_geojson()`: Output the GeoDataFrame as a GeoJSON file
+    - `crop_array_by_polygons()`: Crop an image using polygons in the GeoDataFrame
+    - `crop_dict_by_polygons()`: Crop a dictionary of images by polygons in the GeoDataFrame
 
 ```python
 from pyqupath.geojson import GeojsonProcessor
 from pathlib import Path
 
-# Initialize processor
+# Initialize processor with polygon filtering
 geojson_f = Path("/path/to/input.geojson")
 output_f = Path("/path/to/output.geojson")
-geojson_processor = GeojsonProcessor.from_path(geojson_f)
+geojson_processor = GeojsonProcessor.from_path(geojson_f, polygon_only=True)
 
 # Plot raw classification
-geojson_processor.plot_classification()
+geojson_processor.plot_classification(plot_raw=True)  # Show original geometries
+geojson_processor.plot_classification()  # Show filtered polygons
 
 # Update classification
 name_dict = {"1": "Tumor", "2": "Stroma", "3": "Immune cells"}
@@ -39,37 +43,28 @@ geojson_processor.plot_classification()
 
 # Output updated GeoJSON
 geojson_processor.output_geojson(output_f)
+
+# Crop images using polygons
+img = tiff_reader.zimg  # 3D array (CYX or YXC format)
+for name, cropped_img in geojson_processor.crop_array_by_polygons(img):
+    print(f"{name}: {cropped_img.shape}")
+
+img_dict = tiff_reader.zimg_dict  # Dictionary of 2D arrays
+for name, cropped_dict in geojson_processor.crop_dict_by_polygons(img_dict):
+    print(f"{name}: {len(cropped_dict)}")
 ```
 
 #### Polygon Processing
 
 - `PolygonProcessor` class: A class for processing polygon geometries
   - Methods:
+    - `fix_geometry_to_polygon()`: Fix geometries that should be Polygon but were incorrectly annotated as other types
     - `polygon_to_mask()`: Generate a binary mask from a polygon
     - `crop_array_by_polygon()`: Crop an image using a polygon and apply a mask
-- `crop_array_by_polygon_batch()`: Crop an image using a list of polygons
-- `crop_dict_by_polygon_batch()`: Crop a dictionary of images by a list of polygons
-
-```python
-from pyqupath.geojson import crop_array_by_geojson_batch, crop_dict_by_geojson_batch
-from pyqupath.tiff import TiffZarrReader
-from pathlib import Path
-
-# Initialize reader
-tiff_f = Path("/path/to/input.ome.tiff")
-geojson_f = Path("/path/to/input.geojson")
-tiff_reader = TiffZarrReader.from_ometiff(tiff_f)
-
-# Cropping array
-img = tiff_reader.zimg
-for name, cropped_img in crop_array_by_geojson_batch(img, geojson_f):
-    print(f"{name}: {cropped_img.shape}")
-
-# Cropping dict
-img_dict = tiff_reader.zimg_dict
-for name, cropped_im_dict in crop_dict_by_geojson_batch(img_dict, geojson_f):
-    print(f"{name}: {len(cropped_im_dict)}")
-```
+  - Supports:
+    - Converting MultiPolygon to largest Polygon if area ratio exceeds threshold
+    - Converting LineString to Polygon if endpoints are close enough
+    - Filtering invalid geometries
 
 #### Mask Conversion
 
