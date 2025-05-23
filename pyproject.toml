@@ -1,49 +1,30 @@
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
 [project]
 name = "pyqupath"
-version = "0.0.5"
-description = "QuPath Python utilities"
-readme = "README.md"
-requires-python = ">=3.10"
-license = "GPL-3.0"
+version = "0.1.0"
+description = "QuPath utilities"
 authors = [
-    { name = "wuwenrui555", email = "wuwenruiwwr@outlook.com" }
+    {name = "wuwenrui555",email = "wuwenruiwwr@outlook.com"}
 ]
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
-    "Operating System :: OS Independent",
-]
+license = {text = "GPLv3"}
+readme = "README.md"
+requires-python = ">=3.9"
 dependencies = [
-    "geopandas>=1.0.1",
-    "imagecodecs>=2024.12.30",
-    "ipykernel>=6.29.5",
-    "joblib>=1.4.2",
-    "matplotlib>=3.10.1",
-    "numpy>=1.26.4",
-    "opencv-python>=4.11.0.86",
-    "pandas>=2.2.3",
-    "rasterio>=1.4.3",
-    "scikit-image>=0.25.2",
-    "tqdm>=4.67.1",
-    "tqdm-joblib>=0.0.4",
-    "zarr>=2.18.3",
+    "geopandas (>=1.0.1,<2.0.0)",
+    "joblib (>=1.5.0,<2.0.0)",
+    "numpy (>1.23,<2)",
+    "opencv-python (>=4.11.0.86,<5.0.0.0)",
+    "pandas (>=1.5.2,<2.0.0)",
+    "rasterio (>=1.4.3,<2.0.0)",
+    "scikit-image (>=0.19.3,<0.20.0)",
+    "tqdm (>=4.67.1,<5.0.0)",
+    "tqdm-joblib (>=0.0.4,<0.0.5)",
+    "imagecodecs (>=2024.12.30,<2025.0.0)",
+    "matplotlib (>=3,<4)",
+    "zarr (<3)",
+    "tifffile (<2024.9.20)",
 ]
 
-[project.urls]
-Homepage = "https://github.com/wuwenrui555/pyqupath"
-Repository = "https://github.com/wuwenrui555/pyqupath.git"
 
-[tool.hatch.build.targets.wheel]
-packages = ["pyqupath"]
-
-[dependency-groups]
-dev = [
-    "pyqupath",
-]
-
-[tool.uv.sources]
-pyqupath = { workspace = true }
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

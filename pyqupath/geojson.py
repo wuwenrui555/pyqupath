@@ -1093,6 +1093,7 @@ def update_geojson_classification(
                     "name": new_name,
                     "color": color_dict[new_name],
                 }
+        properties["isLocked"] = True
 
     # Write output
     output_path = Path(output_f)
