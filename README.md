@@ -11,3 +11,7 @@ pip install git+https://github.com/wuwenrui555/pyqupath
 ## Tutorial
 
 [Examples for pyqupath](./pyqupath.ipynb)
+
+## TODO
+
+- geojson: plot_name(), plot names of geojson gdf (similar to plot_classification)
