@@ -1,6 +1,4 @@
 # %%
-"""Color utilities for pyqupath."""
-
 import colorsys
 from typing import List, Tuple, Union
 
@@ -225,55 +223,3 @@ class DefaultColorMap:
         ind = max(0, min(ind, self.n_colors - 1))
 
         return (self.n_colors - 1 - ind) if min_value > max_value else ind
-
-
-# %%
-# Examples
-if __name__ == "__main__":
-    # Example 1: Generate distinct colors
-    print("\n1. Generating distinct colors:")
-    colors5 = generate_distinct_colors(5)
-    print("5 distinct colors:", colors5)
-
-    colors10 = generate_distinct_colors(10)
-    print("\n10 distinct colors:", colors10)
-
-    # Example 2: Assign colors to labels
-    print("\n2. Assigning colors to labels:")
-    cell_types = ["Tumor", "Stroma", "Immune", "Necrosis", "Normal"]
-    color_dict = assign_bright_colors(cell_types)
-    print("Color assignments:")
-    for label, color in color_dict.items():
-        print(f"{label}: RGB{color}")
-
-    # Example 3: Using colormaps
-    print("\n3. Using colormaps:")
-
-    # Red to Blue colormap
-    red_blue_colors = [(255, 0, 0), (0, 0, 255)]
-    red_blue_map = create_colormap("RedBlue", red_blue_colors)
-
-    # Sample colors at different values
-    values = [0, 0.25, 0.5, 0.75, 1.0]
-    colors = [red_blue_map._unpack_rgb(red_blue_map.get_color(v, 0, 1)) for v in values]
-    print("\nRed-Blue gradient at different values:")
-    for value, color in zip(values, colors):
-        print(f"Value {value:.2f}: RGB{color}")
-
-    # Rainbow colormap
-    rainbow_colors = [
-        (255, 0, 0),  # Red
-        (255, 165, 0),  # Orange
-        (255, 255, 0),  # Yellow
-        (0, 255, 0),  # Green
-        (0, 0, 255),  # Blue
-        (148, 0, 211),  # Violet
-    ]
-    rainbow_map = create_colormap("Rainbow", rainbow_colors)
-    rainbow_samples = [
-        rainbow_map._unpack_rgb(rainbow_map.get_color(v, 0, 1))
-        for v in np.linspace(0, 1, 10)
-    ]
-    print("\nRainbow gradient (10 samples):")
-    for i, color in enumerate(rainbow_samples):
-        print(f"Sample {i}: RGB{color}")
