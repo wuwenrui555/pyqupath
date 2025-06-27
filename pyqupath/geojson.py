@@ -22,8 +22,8 @@ from shapely.geometry import (
 from tqdm import tqdm
 from tqdm_joblib import ParallelPbar
 
-from pyqupath import constants
-from pyqupath.color import assign_bright_colors
+from . import constants
+from .color import assign_bright_colors
 
 ################################################################################
 # GeoJSON IO
@@ -51,6 +51,10 @@ class GeojsonProcessor:
         polygon_only : bool, optional
             Whether to only keep Polygon geometries. Default is True.
         """
+        # Add name column if not present
+        if "name" not in gdf.columns:
+            gdf["name"] = gdf.index
+
         # Set name as string
         gdf["name"] = gdf["name"].astype(str)
 
@@ -251,6 +255,74 @@ class GeojsonProcessor:
         else:
             gdf = self.gdf
         return GeojsonProcessor._plot_classification(gdf, figsize, legend, ax)
+
+    def plot_name(
+        self,
+        figsize: tuple = (10, 10),
+        text: bool = True,
+        text_size: int = 12,
+        text_color: str = "black",
+        ax: plt.Axes = None,
+    ) -> plt.Figure:
+        """
+        Plot the name of the GeoDataFrame.
+
+        Parameters
+        ----------
+        figsize : tuple, optional
+            The size of the figure. Default is (10, 10).
+        legend : bool, optional
+            Whether to show the legend. Default is True.
+        ax : plt.Axes, optional
+            The axis to plot on. Default is None.
+
+        Returns
+        -------
+        plt.Figure
+            The figure object.
+        """
+        # Add classification information to the GeoDataFrame
+        gdf = self.gdf
+
+        # Create figure and axis if not provided
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.get_figure()
+
+        colors = assign_bright_colors(gdf["name"].unique()).values()
+        colors_hex = []
+        for color_rgb in colors:
+            colors_hex.append(
+                f"#{color_rgb[0]:02x}{color_rgb[1]:02x}{color_rgb[2]:02x}"
+                if isinstance(color_rgb, (list, tuple)) and len(color_rgb) >= 3
+                else ""
+            )
+        gdf.plot(
+            ax=ax,
+            legend=False,
+            color=colors_hex,
+            aspect=1,
+        )
+
+        if text:
+            for _, row in gdf.iterrows():
+                x_min, y_min, x_max, y_max = row["geometry"].bounds
+                center_x = (x_min + x_max) / 2
+                center_y = (y_min + y_max) / 2
+                ax.text(
+                    center_x,
+                    center_y,
+                    row["name"],
+                    fontsize=text_size,
+                    ha="center",
+                    va="center",
+                    color=text_color,
+                )
+        ax.invert_yaxis()
+        ax.set_aspect("equal")
+
+        return fig
 
     def update_classification(
         self,

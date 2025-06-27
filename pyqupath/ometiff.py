@@ -19,8 +19,6 @@ import tifffile
 import zarr
 from tqdm import tqdm
 
-# from cchalign import constants
-# TQDM_FORMAT = constants.TQDM_FORMAT
 TQDM_FORMAT = "{desc}: {percentage:3.0f}%|{bar:10}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
 
 
