@@ -10,7 +10,7 @@ pip install git+https://github.com/wuwenrui555/pyqupath
 
 ## Tutorial
 
-[Examples for pyqupath](./pyqupath.ipynb)
+- [Quick Start](./notebooks/pyqupath.ipynb)
 
 ## TODO
 
