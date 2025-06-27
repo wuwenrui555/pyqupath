@@ -1,6 +1,6 @@
 [project]
 name = "pyqupath"
-version = "0.1.2"
+version = "0.2.0"
 description = "QuPath utilities"
 authors = [
     {name = "wuwenrui555",email = "wuwenruiwwr@outlook.com"}
