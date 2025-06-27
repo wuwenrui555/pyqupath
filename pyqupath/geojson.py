@@ -51,6 +51,10 @@ class GeojsonProcessor:
         polygon_only : bool, optional
             Whether to only keep Polygon geometries. Default is True.
         """
+        # Add name column if not present
+        if "name" not in gdf.columns:
+            gdf["name"] = gdf.index
+
         # Set name as string
         gdf["name"] = gdf["name"].astype(str)
 
