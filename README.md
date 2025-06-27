@@ -14,5 +14,3 @@ pip install git+https://github.com/wuwenrui555/pyqupath
 - [TMA DeArrayer](./notebooks/tma.ipynb)
 
 ## TODO
-
-- geojson: plot_name(), plot names of geojson gdf (similar to plot_classification)
