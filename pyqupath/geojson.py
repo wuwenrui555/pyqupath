@@ -22,8 +22,8 @@ from shapely.geometry import (
 from tqdm import tqdm
 from tqdm_joblib import ParallelPbar
 
-from pyqupath import constants
-from pyqupath.color import assign_bright_colors
+from . import constants
+from .color import assign_bright_colors
 
 ################################################################################
 # GeoJSON IO
